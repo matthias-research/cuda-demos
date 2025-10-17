@@ -1,0 +1,49 @@
+# Visual Studio
+.vs/
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]in/
+[Oo]bj/
+
+# Visual Studio cache/options
+.vs/
+.vscode/
+
+# Visual Studio profiler
+*.psess
+*.vsp
+*.vspx
+
+# ReSharper
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+# Windows image file caches
+Thumbs.db
+ehthumbs.db
+
+# Folder config file
+Desktop.ini
+
+# Recycle Bin
+$RECYCLE.BIN/
+
+# CUDA
+*.i
+*.ii
+*.gpu
+*.ptx
+*.cubin
+*.fatbin
+
