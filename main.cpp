@@ -29,6 +29,8 @@ int lastMouseX = 0;
 int lastMouseY = 0;
 bool isMouseDragging = false;
 bool isRightMouseDragging = false;
+bool isMiddleMouseDragging = false;
+Vec3 orbitCenter(0.0f, 0.0f, 0.0f);  // Center point for camera orbit
 
 // OpenGL buffer object
 GLuint pbo = 0;
@@ -83,11 +85,6 @@ void display() {
         fps = frameCount / (currentTime - lastTime);
         frameCount = 0;
         lastTime = currentTime;
-    }
-    
-    // Update camera for 3D demos
-    if (demos[currentDemoIndex]->is3D()) {
-        camera.handleKey(keyDown);
     }
     
     // Update current demo
@@ -193,6 +190,10 @@ void keyboard(unsigned char key, int x, int y) {
             // Track keys for camera (3D demos)
             if (key < 256) {
                 keyDown[key] = true;
+                // Handle camera movement immediately for 3D demos
+                if (demos[currentDemoIndex]->is3D()) {
+                    camera.handleKey(keyDown);
+                }
             }
             // Pass to current demo
             demos[currentDemoIndex]->onKeyPress(key);
@@ -203,6 +204,10 @@ void keyboard(unsigned char key, int x, int y) {
 void keyboardUp(unsigned char key, int x, int y) {
     if (key < 256) {
         keyDown[key] = false;
+        // Update camera state immediately for 3D demos
+        if (demos[currentDemoIndex]->is3D()) {
+            camera.handleKey(keyDown);
+        }
     }
 }
 
@@ -217,6 +222,33 @@ void specialKeys(int key, int x, int y) {
     demos[currentDemoIndex]->onSpecialKey(key);
 }
 
+// Helper function to compute ray from screen coordinates
+void getMouseRay(int x, int y, Vec3& orig, Vec3& dir) {
+    GLint viewport[4];
+    GLdouble modelMatrix[16];
+    GLdouble projMatrix[16];
+    
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    glGetDoublev(GL_MODELVIEW_MATRIX, modelMatrix);
+    glGetDoublev(GL_PROJECTION_MATRIX, projMatrix);
+    
+    // Flip Y coordinate
+    int flippedY = viewport[3] - y - 1;
+    
+    GLdouble ox, oy, oz;
+    GLdouble dx, dy, dz;
+    
+    // Unproject near plane
+    gluUnProject((GLdouble)x, (GLdouble)flippedY, 0.0, modelMatrix, projMatrix, viewport, &ox, &oy, &oz);
+    // Unproject far plane
+    gluUnProject((GLdouble)x, (GLdouble)flippedY, 1.0, modelMatrix, projMatrix, viewport, &dx, &dy, &dz);
+    
+    orig = Vec3((float)ox, (float)oy, (float)oz);
+    Vec3 farPoint((float)dx, (float)dy, (float)dz);
+    dir = farPoint - orig;
+    dir.normalize();
+}
+
 void mouse(int button, int state, int x, int y) {
     // Let ImGui handle input first
     if (ImGui::GetCurrentContext()) {
@@ -229,11 +261,33 @@ void mouse(int button, int state, int x, int y) {
     if (demos[currentDemoIndex]->is3D()) {
         if (button == GLUT_LEFT_BUTTON) {
             if (state == GLUT_DOWN) {
+                // Raycast to find orbit center
+                Vec3 rayOrig, rayDir;
+                getMouseRay(x, y, rayOrig, rayDir);
+                
+                float t;
+                if (demos[currentDemoIndex]->raycast(rayOrig, rayDir, t)) {
+                    // Hit! Use the hit point as orbit center
+                    orbitCenter = rayOrig + rayDir * t;
+                } else {
+                    // No hit, use origin as default
+                    orbitCenter = Vec3(0.0f, 0.0f, 0.0f);
+                }
+                
                 isMouseDragging = true;
                 lastMouseX = x;
                 lastMouseY = y;
             } else {
                 isMouseDragging = false;
+            }
+        }
+        else if (button == GLUT_MIDDLE_BUTTON) {
+            if (state == GLUT_DOWN) {
+                isMiddleMouseDragging = true;
+                lastMouseX = x;
+                lastMouseY = y;
+            } else {
+                isMiddleMouseDragging = false;
             }
         }
         else if (button == GLUT_RIGHT_BUTTON) {
@@ -265,10 +319,17 @@ void motion(int x, int y) {
         int dy = y - lastMouseY;
         
         if (isMouseDragging) {
-            camera.handleMouseView(dx, dy);
+            // Left button = orbit around raycast hit point (or origin)
+            camera.handleMouseOrbit(dx, dy, orbitCenter);
+        }
+        else if (isMiddleMouseDragging) {
+            // Middle button = translate/pan (scale adapts to distance from origin)
+            float scale = camera.pos.magnitude() * 0.001f;
+            camera.handleMouseTranslate(dx, dy, scale);
         }
         else if (isRightMouseDragging) {
-            camera.handleMouseTranslate(dx, dy, 0.01f);
+            // Right button = first-person view rotation
+            camera.handleMouseView(dx, dy);
         }
         
         lastMouseX = x;
@@ -328,8 +389,9 @@ int main(int argc, char** argv) {
     std::cout << "  ESC: Exit\n\n";
     std::cout << "3D Camera (Boxes demo):\n";
     std::cout << "  WASD: Move, Q/E: Up/Down\n";
-    std::cout << "  Left Mouse: Rotate view\n";
-    std::cout << "  Right Mouse: Pan camera\n";
+    std::cout << "  Left Mouse: Orbit around point\n";
+    std::cout << "  Middle Mouse: Pan/Translate\n";
+    std::cout << "  Right Mouse: Rotate view\n";
     std::cout << "  Mouse wheel: Zoom\n\n";
     std::cout << "Mandelbrot controls:\n";
     std::cout << "  Mouse wheel: Zoom\n";

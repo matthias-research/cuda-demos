@@ -2,6 +2,9 @@
 
 #include <cuda_runtime.h>
 #include <vector_types.h>
+#include "Vec.h"
+
+using namespace Vec;
 
 class Camera;
 
@@ -19,6 +22,9 @@ public:
     
     // Camera access for 3D demos
     virtual void setCamera(Camera* cam) {}
+    
+    // Raycasting for orbit center (returns true if hit, with distance t)
+    virtual bool raycast(const Vec3& orig, const Vec3& dir, float& t) { return false; }
 
     // Input event handlers
     virtual void onMouseClick(int button, int state, int x, int y) {}

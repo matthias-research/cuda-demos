@@ -286,6 +286,12 @@ void BoxesDemo::update(float deltaTime) {
     if (rotation > 360.0f) rotation -= 360.0f;
 }
 
+bool BoxesDemo::raycast(const Vec3& orig, const Vec3& dir, float& t) {
+    // TODO: Implement ray-box intersection
+    // For now, return false (no hit)
+    return false;
+}
+
 void BoxesDemo::render(uchar4* d_out, int width, int height) {
     if (!camera) return; // Safety check
     
@@ -363,9 +369,12 @@ void BoxesDemo::render(uchar4* d_out, int width, int height) {
 }
 
 void BoxesDemo::renderUI() {
-    ImGui::Text("Camera: WASD + Mouse");
-    ImGui::Text("Q/E: Up/Down");
-    ImGui::Text("Mouse Wheel: Zoom");
+    ImGui::Text("Camera Controls:");
+    ImGui::Text("  WASD: Move, Q/E: Up/Down");
+    ImGui::Text("  Left Mouse: Orbit Point");
+    ImGui::Text("  Middle Mouse: Pan");
+    ImGui::Text("  Right Mouse: Rotate View");
+    ImGui::Text("  Wheel: Zoom");
     
     ImGui::Separator();
     ImGui::Text("Animation:");

@@ -65,8 +65,9 @@ GPU-accelerated Mandelbrot set visualization. Features:
 ### 3D Camera (Boxes Demo only)
 - **W/A/S/D**: Move forward/left/backward/right
 - **Q/E**: Move down/up
-- **Left Mouse Drag**: Rotate view (first-person)
-- **Right Mouse Drag**: Pan camera
+- **Left Mouse Drag**: Orbit around clicked point
+- **Middle Mouse Drag**: Pan/translate camera
+- **Right Mouse Drag**: Rotate view (first-person)
 - **Mouse Wheel**: Zoom in/out
 
 ### Mandelbrot Demo

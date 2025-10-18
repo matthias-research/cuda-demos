@@ -45,6 +45,7 @@ public:
     const char* getName() const override { return "3D Boxes (OpenGL)"; }
     bool is3D() const override { return true; }
     void setCamera(Camera* cam) override { camera = cam; }
+    bool raycast(const Vec3& orig, const Vec3& dir, float& t) override;
     void update(float deltaTime) override;
     void render(uchar4* d_out, int width, int height) override;
     void renderUI() override;
