@@ -3,7 +3,7 @@
 #include <math.h>
 
 // Particle System Demo
-__global__ void particleKernel(float4* pos, unsigned int width, unsigned int height, float time) {
+__global__ void particleKernel(uchar4* ptr, unsigned int width, unsigned int height, float time) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     int idx = y * width + x;
@@ -31,18 +31,17 @@ __global__ void particleKernel(float4* pos, unsigned int width, unsigned int hei
         b += intensity * (0.5f + 0.5f * sinf(time * 1.3f + i));
     }
     
-    pos[idx] = make_float4(
-        fminf(r * 255.0f, 255.0f),
-        fminf(g * 255.0f, 255.0f),
-        fminf(b * 255.0f, 255.0f),
-        255.0f
-    );
+    unsigned char cr = (unsigned char)(fminf(r * 255.0f, 255.0f));
+    unsigned char cg = (unsigned char)(fminf(g * 255.0f, 255.0f));
+    unsigned char cb = (unsigned char)(fminf(b * 255.0f, 255.0f));
+    
+    ptr[idx] = make_uchar4(cr, cg, cb, 255);
 }
 
-extern "C" void launchParticleKernel(float4* pos, unsigned int width, unsigned int height, float time) {
+extern "C" void launchParticleKernel(uchar4* ptr, unsigned int width, unsigned int height, float time) {
     dim3 block(16, 16);
     dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
-    particleKernel<<<grid, block>>>(pos, width, height, time);
+    particleKernel<<<grid, block>>>(ptr, width, height, time);
     cudaDeviceSynchronize();
 }
 
@@ -85,14 +84,19 @@ __global__ void mandelbrotKernel(uchar4* ptr, unsigned int width, unsigned int h
     
     if (x >= width || y >= height) return;
     
-    float jx = (x - width / 2.0f) / (width / 4.0f) / zoom + centerX;
-    float jy = (y - height / 2.0f) / (height / 4.0f) / zoom + centerY;
+    // Map pixel coordinates to complex plane with correct aspect ratio
+    // Normalize both axes by height/2 to ensure square pixels
+    float scale = 2.0f / zoom;
+    float jx = ((x - width / 2.0f) / (height / 2.0f)) * scale + centerX;
+    float jy = ((y - height / 2.0f) / (height / 2.0f)) * scale + centerY;
     
     float cx = jx;
     float cy = jy;
     
     int iter = 0;
-    int maxIter = 256;
+    // Dynamic iteration count based on zoom level
+    // More zoom = more detail = more iterations needed
+    int maxIter = 256 + (int)(log2f(fmaxf(zoom, 1.0f)) * 32.0f);
     
     while (cx * cx + cy * cy < 4.0f && iter < maxIter) {
         float xtemp = cx * cx - cy * cy + jx;
