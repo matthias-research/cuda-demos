@@ -117,7 +117,7 @@ void display() {
         ImGui::NewFrame();
         
         ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(320, 400), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(320, 500), ImGuiCond_FirstUseEver);
         ImGui::Begin("CUDA Demo Controls", &showUI, ImGuiWindowFlags_None);
         
         ImGui::Text("FPS: %.1f", fps);

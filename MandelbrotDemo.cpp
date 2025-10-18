@@ -27,8 +27,31 @@ void MandelbrotDemo::renderUI() {
     ImGui::SliderFloat("Center X", &centerX, -2.0f, 2.0f, "%.8f");
     ImGui::SliderFloat("Center Y", &centerY, -2.0f, 2.0f, "%.8f");
     
-    if (ImGui::Button("Reset View")) {
-        reset();
+    ImGui::Separator();
+    ImGui::Text("Famous Locations:");
+    
+    if (ImGui::Button("Misiurewicz Point", ImVec2(200, 0))) {
+        centerX = -0.77568377f;
+        centerY = 0.13646737f;
+        zoom = 1.0f;
+    }
+    
+    if (ImGui::Button("Minibrot", ImVec2(200, 0))) {
+        centerX = -0.7436439f;
+        centerY = 0.1318259f;
+        zoom = 1.0f;
+    }
+    
+    if (ImGui::Button("Filaments", ImVec2(200, 0))) {
+        centerX = -0.761574f;
+        centerY = -0.0847596f;
+        zoom = 1.0f;
+    }
+    
+    if (ImGui::Button("Seahorse Valley", ImVec2(200, 0))) {
+        centerX = 0.3750001200618655f;
+        centerY = -0.2166393884377127f;
+        zoom = 1.0f;
     }
     
     ImGui::Separator();
@@ -64,7 +87,7 @@ void MandelbrotDemo::onMouseDrag(int x, int y) {
         // Scale by zoom and aspect ratio
         float scale = 2.0f / zoom;
         float moveX = -(dx / (float)(windowHeight / 2)) * scale;
-        float moveY = (dy / (float)(windowHeight / 2)) * scale;
+        float moveY = -(dy / (float)(windowHeight / 2)) * scale;  // Negative to match intuitive drag
         
         centerX += moveX;
         centerY += moveY;
@@ -75,26 +98,13 @@ void MandelbrotDemo::onMouseDrag(int x, int y) {
 }
 
 void MandelbrotDemo::onMouseWheel(int wheel, int direction, int x, int y) {
-    // Get mouse position in complex plane before zoom
-    float scale = 2.0f / zoom;
-    float mouseComplexX = ((x - windowWidth / 2.0f) / (windowHeight / 2.0f)) * scale + centerX;
-    float mouseComplexY = ((y - windowHeight / 2.0f) / (windowHeight / 2.0f)) * scale + centerY;
-    
-    // Zoom in/out
+    // Zoom in/out without changing center
     float zoomFactor = (direction > 0) ? 1.2f : 0.8f;
     zoom *= zoomFactor;
     
     // Clamp zoom
     if (zoom < 0.1f) zoom = 0.1f;
     if (zoom > 100000.0f) zoom = 100000.0f;
-    
-    // Adjust center to zoom towards mouse position
-    float newScale = 2.0f / zoom;
-    float newMouseComplexX = ((x - windowWidth / 2.0f) / (windowHeight / 2.0f)) * newScale + centerX;
-    float newMouseComplexY = ((y - windowHeight / 2.0f) / (windowHeight / 2.0f)) * newScale + centerY;
-    
-    centerX += (mouseComplexX - newMouseComplexX);
-    centerY += (mouseComplexY - newMouseComplexY);
 }
 
 void MandelbrotDemo::onSpecialKey(int key) {
