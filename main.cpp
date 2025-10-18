@@ -1,3 +1,4 @@
+#include <GL/glew.h>
 #include <GL/freeglut.h>
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
@@ -159,8 +160,14 @@ int main(int argc, char** argv) {
     glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
     glutCreateWindow("CUDA Demos");
     
-    // Initialize CUDA
-    cudaGLSetGLDevice(0);
+    // Initialize GLEW
+    GLenum err = glewInit();
+    if (err != GLEW_OK) {
+        std::cerr << "Error: " << glewGetErrorString(err) << std::endl;
+        return -1;
+    }
+    
+    // Initialize CUDA (cudaGLSetGLDevice is deprecated - CUDA auto-detects the device)
     
     // Setup callbacks
     glutDisplayFunc(display);
