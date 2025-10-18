@@ -96,11 +96,14 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="Camera.cpp" />
     <ClCompile Include="BoxesDemo.cpp" />
     <ClCompile Include="MandelbrotDemo.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Demo.h" />
+    <ClInclude Include="Vec.h" />
+    <ClInclude Include="Camera.h" />
     <ClInclude Include="BoxesDemo.h" />
     <ClInclude Include="MandelbrotDemo.h" />
   </ItemGroup>

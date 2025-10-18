@@ -17,6 +17,7 @@ private:
 
 public:
     const char* getName() const override { return "Mandelbrot Fractal"; }
+    bool is3D() const override { return false; }
     void update(float deltaTime) override;
     void render(uchar4* d_out, int width, int height) override;
     void renderUI() override;

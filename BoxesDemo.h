@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Demo.h"
+#include "Camera.h"
 #include <GL/glew.h>
 
 class BoxesDemo : public Demo {
@@ -19,10 +20,8 @@ private:
     float rotation = 0.0f;
     float rotationSpeed = 45.0f; // degrees per second
     
-    // Camera
-    float cameraDistance = 5.0f;
-    float cameraAngleX = 30.0f;
-    float cameraAngleY = 45.0f;
+    // Camera (reference to main camera)
+    Camera* camera = nullptr;
     
     // Lighting
     float lightPosX = 5.0f;
@@ -44,6 +43,8 @@ public:
     ~BoxesDemo();
     
     const char* getName() const override { return "3D Boxes (OpenGL)"; }
+    bool is3D() const override { return true; }
+    void setCamera(Camera* cam) override { camera = cam; }
     void update(float deltaTime) override;
     void render(uchar4* d_out, int width, int height) override;
     void renderUI() override;

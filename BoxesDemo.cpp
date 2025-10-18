@@ -5,6 +5,8 @@
 #include <vector>
 #include <cuda_runtime.h>
 
+using namespace Vec;
+
 // Vertex shader with Phong lighting
 const char* vertexShaderSource = R"(
 #version 330 core
@@ -285,6 +287,8 @@ void BoxesDemo::update(float deltaTime) {
 }
 
 void BoxesDemo::render(uchar4* d_out, int width, int height) {
+    if (!camera) return; // Safety check
+    
     // Initialize framebuffer if needed
     initFramebuffer(width, height);
     
@@ -302,13 +306,11 @@ void BoxesDemo::render(uchar4* d_out, int width, int height) {
     float model[16], view[16], projection[16];
     setRotationY(model, rotation * 3.14159f / 180.0f);
     
-    // Calculate camera position from angles
-    float camX = cameraDistance * sin(cameraAngleY * 3.14159f / 180.0f) * cos(cameraAngleX * 3.14159f / 180.0f);
-    float camY = cameraDistance * sin(cameraAngleX * 3.14159f / 180.0f);
-    float camZ = cameraDistance * cos(cameraAngleY * 3.14159f / 180.0f) * cos(cameraAngleX * 3.14159f / 180.0f);
-    
-    setLookAt(view, camX, camY, camZ, 0, 0, 0, 0, 1, 0);
-    setPerspective(projection, 45.0f * 3.14159f / 180.0f, (float)width / height, 0.1f, 100.0f);
+    // Use Camera object for view
+    Vec3 camPos = camera->pos;
+    Vec3 camTarget = camera->pos + camera->forward;
+    setLookAt(view, camPos.x, camPos.y, camPos.z, camTarget.x, camTarget.y, camTarget.z, camera->up.x, camera->up.y, camera->up.z);
+    setPerspective(projection, camera->fov * 3.14159f / 180.0f, (float)width / height, 0.1f, 100.0f);
     
     // Set uniforms
     GLint modelLoc = glGetUniformLocation(shaderProgram, "model");
@@ -327,7 +329,7 @@ void BoxesDemo::render(uchar4* d_out, int width, int height) {
     GLint shininessLoc = glGetUniformLocation(shaderProgram, "shininess");
     
     glUniform3f(lightPosLoc, lightPosX, lightPosY, lightPosZ);
-    glUniform3f(viewPosLoc, camX, camY, camZ);
+    glUniform3f(viewPosLoc, camPos.x, camPos.y, camPos.z);
     glUniform3f(objectColorLoc, 0.9f, 0.5f, 0.2f); // Orange color
     glUniform1f(ambientLoc, ambientStrength);
     glUniform1f(specularLoc, specularStrength);
@@ -361,14 +363,13 @@ void BoxesDemo::render(uchar4* d_out, int width, int height) {
 }
 
 void BoxesDemo::renderUI() {
-    ImGui::Text("Rotation Speed:");
-    ImGui::SliderFloat("##rotSpeed", &rotationSpeed, 0.0f, 180.0f, "%.1f deg/s");
+    ImGui::Text("Camera: WASD + Mouse");
+    ImGui::Text("Q/E: Up/Down");
+    ImGui::Text("Mouse Wheel: Zoom");
     
     ImGui::Separator();
-    ImGui::Text("Camera:");
-    ImGui::SliderFloat("Distance##cam", &cameraDistance, 2.0f, 10.0f);
-    ImGui::SliderFloat("Angle X##cam", &cameraAngleX, -89.0f, 89.0f, "%.1f deg");
-    ImGui::SliderFloat("Angle Y##cam", &cameraAngleY, 0.0f, 360.0f, "%.1f deg");
+    ImGui::Text("Animation:");
+    ImGui::SliderFloat("Rotation Speed##rot", &rotationSpeed, 0.0f, 180.0f, "%.1f deg/s");
     
     ImGui::Separator();
     ImGui::Text("Lighting:");
@@ -382,23 +383,19 @@ void BoxesDemo::renderUI() {
     ImGui::SliderFloat("Specular##mat", &specularStrength, 0.0f, 2.0f);
     ImGui::SliderFloat("Shininess##mat", &shininess, 2.0f, 256.0f);
     
-    if (ImGui::Button("Reset Camera")) {
-        cameraDistance = 5.0f;
-        cameraAngleX = 30.0f;
-        cameraAngleY = 45.0f;
+    if (ImGui::Button("Reset View")) {
+        if (camera) camera->resetView();
     }
 }
 
 void BoxesDemo::reset() {
     rotation = 0.0f;
     rotationSpeed = 45.0f;
-    cameraDistance = 5.0f;
-    cameraAngleX = 30.0f;
-    cameraAngleY = 45.0f;
     lightPosX = 5.0f;
     lightPosY = 5.0f;
     lightPosZ = 5.0f;
     ambientStrength = 0.1f;
     specularStrength = 0.5f;
     shininess = 32.0f;
+    if (camera) camera->resetView();
 }

@@ -10,6 +10,7 @@
 #include <imgui_impl_glut.h>
 
 #include "Demo.h"
+#include "Camera.h"
 #include "BoxesDemo.h"
 #include "MandelbrotDemo.h"
 
@@ -20,6 +21,14 @@ unsigned int windowHeight = 768;
 // Demo management
 std::vector<std::unique_ptr<Demo>> demos;
 int currentDemoIndex = 0;
+
+// Camera for 3D demos
+Camera camera;
+bool keyDown[256] = {false};
+int lastMouseX = 0;
+int lastMouseY = 0;
+bool isMouseDragging = false;
+bool isRightMouseDragging = false;
 
 // OpenGL buffer object
 GLuint pbo = 0;
@@ -74,6 +83,11 @@ void display() {
         fps = frameCount / (currentTime - lastTime);
         frameCount = 0;
         lastTime = currentTime;
+    }
+    
+    // Update camera for 3D demos
+    if (demos[currentDemoIndex]->is3D()) {
+        camera.handleKey(keyDown);
     }
     
     // Update current demo
@@ -176,9 +190,19 @@ void keyboard(unsigned char key, int x, int y) {
             exit(0);
             break;
         default:
+            // Track keys for camera (3D demos)
+            if (key < 256) {
+                keyDown[key] = true;
+            }
             // Pass to current demo
             demos[currentDemoIndex]->onKeyPress(key);
             break;
+    }
+}
+
+void keyboardUp(unsigned char key, int x, int y) {
+    if (key < 256) {
+        keyDown[key] = false;
     }
 }
 
@@ -201,6 +225,28 @@ void mouse(int button, int state, int x, int y) {
         if (io.WantCaptureMouse) return;
     }
     
+    // Handle camera input for 3D demos
+    if (demos[currentDemoIndex]->is3D()) {
+        if (button == GLUT_LEFT_BUTTON) {
+            if (state == GLUT_DOWN) {
+                isMouseDragging = true;
+                lastMouseX = x;
+                lastMouseY = y;
+            } else {
+                isMouseDragging = false;
+            }
+        }
+        else if (button == GLUT_RIGHT_BUTTON) {
+            if (state == GLUT_DOWN) {
+                isRightMouseDragging = true;
+                lastMouseX = x;
+                lastMouseY = y;
+            } else {
+                isRightMouseDragging = false;
+            }
+        }
+    }
+    
     // Pass to current demo
     demos[currentDemoIndex]->onMouseClick(button, state, x, y);
 }
@@ -213,6 +259,22 @@ void motion(int x, int y) {
         if (io.WantCaptureMouse) return;
     }
     
+    // Handle camera input for 3D demos
+    if (demos[currentDemoIndex]->is3D()) {
+        int dx = x - lastMouseX;
+        int dy = y - lastMouseY;
+        
+        if (isMouseDragging) {
+            camera.handleMouseView(dx, dy);
+        }
+        else if (isRightMouseDragging) {
+            camera.handleMouseTranslate(dx, dy, 0.01f);
+        }
+        
+        lastMouseX = x;
+        lastMouseY = y;
+    }
+    
     // Pass to current demo
     demos[currentDemoIndex]->onMouseDrag(x, y);
 }
@@ -222,6 +284,11 @@ void mouseWheel(int wheel, int direction, int x, int y) {
     if (ImGui::GetCurrentContext()) {
         ImGuiIO& io = ImGui::GetIO();
         if (io.WantCaptureMouse) return;
+    }
+    
+    // Handle camera input for 3D demos
+    if (demos[currentDemoIndex]->is3D()) {
+        camera.handleWheel(direction);
     }
     
     // Pass to current demo
@@ -258,7 +325,12 @@ int main(int argc, char** argv) {
     std::cout << "  1: 3D Boxes (OpenGL)\n";
     std::cout << "  2: Mandelbrot Fractal (CUDA)\n";
     std::cout << "  H: Hide/show UI\n";
-    std::cout << "  ESC: Exit\n";
+    std::cout << "  ESC: Exit\n\n";
+    std::cout << "3D Camera (Boxes demo):\n";
+    std::cout << "  WASD: Move, Q/E: Up/Down\n";
+    std::cout << "  Left Mouse: Rotate view\n";
+    std::cout << "  Right Mouse: Pan camera\n";
+    std::cout << "  Mouse wheel: Zoom\n\n";
     std::cout << "Mandelbrot controls:\n";
     std::cout << "  Mouse wheel: Zoom\n";
     std::cout << "  Click and drag: Pan\n";
@@ -353,15 +425,27 @@ int main(int argc, char** argv) {
     colors[ImGuiCol_NavWindowingDimBg]      = ImVec4(0.80f, 0.80f, 0.80f, 0.20f);
     colors[ImGuiCol_ModalWindowDimBg]       = ImVec4(0.80f, 0.80f, 0.80f, 0.35f);
     
+    // Initialize camera
+    camera.init();
+    camera.resetView();
+    
     // Create demos
     demos.push_back(std::make_unique<BoxesDemo>());
     demos.push_back(std::make_unique<MandelbrotDemo>());
+    
+    // Set camera for 3D demos
+    for (auto& demo : demos) {
+        if (demo->is3D()) {
+            demo->setCamera(&camera);
+        }
+    }
     
     std::cout << "Starting with: " << demos[0]->getName() << "\n\n";
     
     // Setup callbacks
     glutDisplayFunc(display);
     glutKeyboardFunc(keyboard);
+    glutKeyboardUpFunc(keyboardUp);
     glutSpecialFunc(specialKeys);
     glutReshapeFunc(reshape);
     glutMouseFunc(mouse);

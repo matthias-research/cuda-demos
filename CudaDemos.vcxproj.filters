@@ -18,6 +18,9 @@
     <ClCompile Include="main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Camera.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="BoxesDemo.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -27,6 +30,12 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Demo.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Vec.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Camera.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="BoxesDemo.h">

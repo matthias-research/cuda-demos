@@ -44,8 +44,8 @@ If your vcpkg is not in `C:\Users\matth\GIT\vcpkg`, edit `CudaDemos.vcxproj`:
 ### 1. 3D Boxes (OpenGL)
 A rotating cube with Phong shading. Features:
 - Real-time Phong lighting (ambient, diffuse, specular)
+- Full 3D camera navigation (WASD + mouse)
 - Adjustable rotation speed
-- Interactive camera controls
 - Adjustable light position and material properties
 
 ### 2. Mandelbrot Fractal (CUDA)
@@ -56,11 +56,23 @@ GPU-accelerated Mandelbrot set visualization. Features:
 
 ## Controls
 
+### General
 - **1**: Switch to 3D Boxes demo
 - **2**: Switch to Mandelbrot Fractal demo
 - **H**: Hide/show UI panel
 - **ESC**: Exit
-- **UI Panel**: Use buttons and sliders for interactive control
+
+### 3D Camera (Boxes Demo only)
+- **W/A/S/D**: Move forward/left/backward/right
+- **Q/E**: Move down/up
+- **Left Mouse Drag**: Rotate view (first-person)
+- **Right Mouse Drag**: Pan camera
+- **Mouse Wheel**: Zoom in/out
+
+### Mandelbrot Demo
+- **Mouse Wheel**: Zoom
+- **Click and Drag**: Pan
+- **Arrow Keys**: Pan
 
 ## Troubleshooting
 
