@@ -38,6 +38,15 @@
     <ClInclude Include="Camera.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="CudaUtils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BVH.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="RigidBodiyKernels.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="BoxesDemo.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -46,6 +55,12 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <CudaCompile Include="BVH.cu">
+      <Filter>CUDA Files</Filter>
+    </CudaCompile>
+    <CudaCompile Include="RigidBody.cu">
+      <Filter>CUDA Files</Filter>
+    </CudaCompile>
     <CudaCompile Include="MandelbrotDemo.cu">
       <Filter>CUDA Files</Filter>
     </CudaCompile>

@@ -68,6 +68,7 @@
       <TargetMachinePlatform>64</TargetMachinePlatform>
       <GenerateRelocatableDeviceCode>true</GenerateRelocatableDeviceCode>
       <CodeGeneration>compute_52,sm_52</CodeGeneration>
+      <AdditionalIncludeDirectories>$(CUDA_PATH)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -92,6 +93,7 @@
       <TargetMachinePlatform>64</TargetMachinePlatform>
       <GenerateRelocatableDeviceCode>true</GenerateRelocatableDeviceCode>
       <CodeGeneration>compute_52,sm_52</CodeGeneration>
+      <AdditionalIncludeDirectories>$(CUDA_PATH)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -104,10 +106,15 @@
     <ClInclude Include="Demo.h" />
     <ClInclude Include="Vec.h" />
     <ClInclude Include="Camera.h" />
+    <ClInclude Include="CudaUtils.h" />
+    <ClInclude Include="BVH.h" />
+    <ClInclude Include="RigidBodiyKernels.h" />
     <ClInclude Include="BoxesDemo.h" />
     <ClInclude Include="MandelbrotDemo.h" />
   </ItemGroup>
   <ItemGroup>
+    <CudaCompile Include="BVH.cu" />
+    <CudaCompile Include="RigidBody.cu" />
     <CudaCompile Include="MandelbrotDemo.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
