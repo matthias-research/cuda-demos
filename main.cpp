@@ -3,41 +3,38 @@
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 #include <iostream>
-#include <cmath>
+#include <memory>
+#include <vector>
 #include <imgui.h>
 #include <imgui_impl_opengl3.h>
 #include <imgui_impl_glut.h>
 
-// Forward declarations of CUDA kernels
-extern "C" void launchParticleKernel(uchar4* ptr, unsigned int width, unsigned int height, float time);
-extern "C" void launchWaveKernel(uchar4* ptr, unsigned int width, unsigned int height, float time);
-extern "C" void launchMandelbrotKernel(uchar4* ptr, unsigned int width, unsigned int height, float zoom, float centerX, float centerY);
+#include "Demo.h"
+#include "ParticleDemo.h"
+#include "WaveDemo.h"
+#include "MandelbrotDemo.h"
 
 // Window dimensions (can change on resize)
 unsigned int windowWidth = 1024;
 unsigned int windowHeight = 768;
 
-// Current demo selection
-enum DemoType { PARTICLES, WAVES, MANDELBROT };
-DemoType currentDemo = PARTICLES;
+// Demo management
+std::vector<std::unique_ptr<Demo>> demos;
+int currentDemoIndex = 0;
 
 // OpenGL buffer object
 GLuint pbo = 0;
 GLuint tex = 0;
 struct cudaGraphicsResource* cuda_pbo_resource;
 
-// Animation
-float animTime = 0.0f;
-float animSpeed = 1.0f;
-float zoom = 1.0f;
-float centerX = -0.77568377f;  // Misiurewicz Point
-float centerY = 0.13646737f;
-
 // UI state
 bool showUI = true;
 float fps = 0.0f;
 int frameCount = 0;
 float lastTime = 0.0f;
+
+// GPU info (cached at startup)
+std::string gpuName;
 
 void initPixelBuffer() {
     if (pbo != 0) {
@@ -65,46 +62,38 @@ void initPixelBuffer() {
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-void runCurrentDemo() {
-    uchar4* d_out = 0;
-    cudaGraphicsMapResources(1, &cuda_pbo_resource, 0);
-    size_t num_bytes;
-    cudaGraphicsResourceGetMappedPointer((void**)&d_out, &num_bytes, cuda_pbo_resource);
-    
-    switch (currentDemo) {
-        case PARTICLES:
-            launchParticleKernel(d_out, windowWidth, windowHeight, animTime);
-            break;
-        case WAVES:
-            launchWaveKernel(d_out, windowWidth, windowHeight, animTime);
-            break;
-        case MANDELBROT:
-            launchMandelbrotKernel(d_out, windowWidth, windowHeight, zoom, centerX, centerY);
-            break;
-        default:
-            break;
-    }
-    
-    cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0);
-}
-
 void display() {
-    animTime += 0.01f * animSpeed;
+    // Calculate delta time
+    static float lastFrameTime = 0.0f;
+    float currentTime = glutGet(GLUT_ELAPSED_TIME) / 1000.0f;
+    float deltaTime = currentTime - lastFrameTime;
+    lastFrameTime = currentTime;
     
     // Update FPS
     frameCount++;
-    float currentTime = glutGet(GLUT_ELAPSED_TIME) / 1000.0f;
     if (currentTime - lastTime >= 1.0f) {
         fps = frameCount / (currentTime - lastTime);
         frameCount = 0;
         lastTime = currentTime;
     }
     
-    // Clear and run CUDA demo
+    // Update current demo
+    demos[currentDemoIndex]->update(deltaTime);
+    
+    // Render CUDA demo
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     
-    runCurrentDemo();
+    // Get CUDA device pointer
+    uchar4* d_out = 0;
+    cudaGraphicsMapResources(1, &cuda_pbo_resource, 0);
+    size_t num_bytes;
+    cudaGraphicsResourceGetMappedPointer((void**)&d_out, &num_bytes, cuda_pbo_resource);
+    
+    // Render current demo
+    demos[currentDemoIndex]->render(d_out, windowWidth, windowHeight);
+    
+    cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0);
     
     // Draw texture to screen
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
@@ -128,59 +117,31 @@ void display() {
         ImGui::NewFrame();
         
         ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(250, 400), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(320, 400), ImGuiCond_FirstUseEver);
         ImGui::Begin("CUDA Demo Controls", &showUI, ImGuiWindowFlags_None);
         
         ImGui::Text("FPS: %.1f", fps);
+        ImGui::Text("GPU: %s", gpuName.c_str());
         ImGui::Separator();
         
         ImGui::Text("Demo Selection:");
-        if (ImGui::Button("Particle System", ImVec2(200, 0))) {
-            currentDemo = PARTICLES;
-        }
-        if (ImGui::Button("Wave Simulation", ImVec2(200, 0))) {
-            currentDemo = WAVES;
-        }
-        if (ImGui::Button("Mandelbrot Fractal", ImVec2(200, 0))) {
-            currentDemo = MANDELBROT;
-        }
-        
-        ImGui::Separator();
-        ImGui::Text("Parameters:");
-        ImGui::SliderFloat("Animation Speed", &animSpeed, 0.0f, 5.0f);
-        
-        if (currentDemo == MANDELBROT) {
-            ImGui::SliderFloat("Zoom", &zoom, 0.1f, 100000.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
-            ImGui::SliderFloat("Center X", &centerX, -2.0f, 2.0f);
-            ImGui::SliderFloat("Center Y", &centerY, -2.0f, 2.0f);
-            if (ImGui::Button("Reset View")) {
-                zoom = 1.0f;
-                centerX = -0.5f;
-                centerY = 0.0f;
+        for (int i = 0; i < demos.size(); i++) {
+            if (ImGui::Button(demos[i]->getName(), ImVec2(200, 0))) {
+                currentDemoIndex = i;
+                std::cout << "Switched to: " << demos[i]->getName() << "\n";
             }
         }
         
         ImGui::Separator();
+        ImGui::Text("Controls:");
         
-        // GPU Info
-        cudaDeviceProp prop;
-        cudaGetDeviceProperties(&prop, 0);
-        ImGui::Text("GPU: %s", prop.name);
-        ImGui::Text("Compute: %d.%d", prop.major, prop.minor);
-        
-        ImGui::Separator();
-        ImGui::Text("Press 'H' to hide/show UI");
-        ImGui::Text("Press ESC to exit");
+        // Render current demo's UI
+        demos[currentDemoIndex]->renderUI();
         
         ImGui::End();
         
         ImGui::Render();
-        
-        // Check if we have draw data
-        ImDrawData* draw_data = ImGui::GetDrawData();
-        if (draw_data && draw_data->CmdListsCount > 0) {
-            ImGui_ImplOpenGL3_RenderDrawData(draw_data);
-        }
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     }
     
     glutSwapBuffers();
@@ -188,7 +149,7 @@ void display() {
 }
 
 void keyboard(unsigned char key, int x, int y) {
-    // Check if ImGui context exists
+    // Let ImGui handle input first
     if (ImGui::GetCurrentContext()) {
         ImGuiIO& io = ImGui::GetIO();
         if (io.WantCaptureKeyboard) return;
@@ -196,58 +157,82 @@ void keyboard(unsigned char key, int x, int y) {
     
     switch (key) {
         case '1':
-            currentDemo = PARTICLES;
-            std::cout << "Demo: Particle System\n";
+            if (currentDemoIndex != 0) {
+                currentDemoIndex = 0;
+                std::cout << "Switched to: " << demos[0]->getName() << "\n";
+            }
             break;
         case '2':
-            currentDemo = WAVES;
-            std::cout << "Demo: Wave Simulation\n";
+            if (currentDemoIndex != 1) {
+                currentDemoIndex = 1;
+                std::cout << "Switched to: " << demos[1]->getName() << "\n";
+            }
             break;
         case '3':
-            currentDemo = MANDELBROT;
-            std::cout << "Demo: Mandelbrot Fractal\n";
+            if (currentDemoIndex != 2) {
+                currentDemoIndex = 2;
+                std::cout << "Switched to: " << demos[2]->getName() << "\n";
+            }
             break;
         case 'h':
         case 'H':
             showUI = !showUI;
             std::cout << "UI " << (showUI ? "shown" : "hidden") << "\n";
             break;
-        case '+':
-        case '=':
-            zoom *= 1.2f;
-            break;
-        case '-':
-        case '_':
-            zoom /= 1.2f;
-            break;
         case 27: // ESC
             exit(0);
+            break;
+        default:
+            // Pass to current demo
+            demos[currentDemoIndex]->onKeyPress(key);
             break;
     }
 }
 
 void specialKeys(int key, int x, int y) {
-    // Check if ImGui context exists
+    // Let ImGui handle input first
     if (ImGui::GetCurrentContext()) {
         ImGuiIO& io = ImGui::GetIO();
         if (io.WantCaptureKeyboard) return;
     }
     
-    float moveSpeed = 0.1f / zoom;
-    switch (key) {
-        case GLUT_KEY_UP:
-            centerY += moveSpeed;
-            break;
-        case GLUT_KEY_DOWN:
-            centerY -= moveSpeed;
-            break;
-        case GLUT_KEY_LEFT:
-            centerX -= moveSpeed;
-            break;
-        case GLUT_KEY_RIGHT:
-            centerX += moveSpeed;
-            break;
+    // Pass to current demo (arrow keys, etc.)
+    demos[currentDemoIndex]->onSpecialKey(key);
+}
+
+void mouse(int button, int state, int x, int y) {
+    // Let ImGui handle input first
+    if (ImGui::GetCurrentContext()) {
+        ImGuiIO& io = ImGui::GetIO();
+        ImGui_ImplGLUT_MouseFunc(button, state, x, y);
+        if (io.WantCaptureMouse) return;
     }
+    
+    // Pass to current demo
+    demos[currentDemoIndex]->onMouseClick(button, state, x, y);
+}
+
+void motion(int x, int y) {
+    // Let ImGui handle input first
+    if (ImGui::GetCurrentContext()) {
+        ImGuiIO& io = ImGui::GetIO();
+        ImGui_ImplGLUT_MotionFunc(x, y);
+        if (io.WantCaptureMouse) return;
+    }
+    
+    // Pass to current demo
+    demos[currentDemoIndex]->onMouseDrag(x, y);
+}
+
+void mouseWheel(int wheel, int direction, int x, int y) {
+    // Let ImGui handle input first
+    if (ImGui::GetCurrentContext()) {
+        ImGuiIO& io = ImGui::GetIO();
+        if (io.WantCaptureMouse) return;
+    }
+    
+    // Pass to current demo
+    demos[currentDemoIndex]->onMouseWheel(wheel, direction, x, y);
 }
 
 void reshape(int w, int h) {
@@ -274,14 +259,16 @@ void cleanup() {
 }
 
 int main(int argc, char** argv) {
-    std::cout << "CUDA + FreeGLUT Demos\n";
-    std::cout << "=====================\n";
-    std::cout << "Use the UI controls or keyboard shortcuts:\n";
-    std::cout << "Press 1: Particle System\n";
-    std::cout << "Press 2: Wave Simulation\n";
-    std::cout << "Press 3: Mandelbrot Fractal\n";
-    std::cout << "Press H: Hide/show UI\n";
-    std::cout << "Press ESC: Exit\n\n";
+    std::cout << "CUDA + FreeGLUT + ImGui Demos\n";
+    std::cout << "==============================\n";
+    std::cout << "Controls:\n";
+    std::cout << "  1/2/3: Switch demos\n";
+    std::cout << "  H: Hide/show UI\n";
+    std::cout << "  ESC: Exit\n";
+    std::cout << "Mandelbrot controls:\n";
+    std::cout << "  Mouse wheel: Zoom\n";
+    std::cout << "  Click and drag: Pan\n";
+    std::cout << "  Arrow keys: Pan\n\n";
     
     // Initialize GLUT
     glutInit(&argc, argv);
@@ -296,16 +283,22 @@ int main(int argc, char** argv) {
         return -1;
     }
     
-    // Initialize CUDA (cudaGLSetGLDevice is deprecated - CUDA auto-detects the device)
+    // Get GPU info
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, 0);
+    gpuName = prop.name;
+    std::cout << "Using GPU: " << gpuName << "\n\n";
     
-    // Initialize pixel buffer (before ImGui to ensure OpenGL context is ready)
+    // Initialize pixel buffer
     initPixelBuffer();
     
-    // Setup ImGui (after OpenGL/GLEW initialization)
+    // Setup ImGui
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
-    io.IniFilename = nullptr; // Disable imgui.ini
+    
+    ImGui_ImplGLUT_Init();
+    ImGui_ImplOpenGL3_Init("#version 130");
     
     // Custom dark style with orange accents and transparency
     ImGuiStyle& style = ImGui::GetStyle();
@@ -319,34 +312,34 @@ int main(int argc, char** argv) {
     ImVec4* colors = style.Colors;
     colors[ImGuiCol_Text]                   = ImVec4(0.95f, 0.95f, 0.95f, 1.00f);
     colors[ImGuiCol_TextDisabled]           = ImVec4(0.50f, 0.50f, 0.50f, 1.00f);
-    colors[ImGuiCol_WindowBg]               = ImVec4(0.08f, 0.08f, 0.08f, 0.90f); // Dark with transparency
+    colors[ImGuiCol_WindowBg]               = ImVec4(0.08f, 0.08f, 0.08f, 0.90f);
     colors[ImGuiCol_ChildBg]                = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
     colors[ImGuiCol_PopupBg]                = ImVec4(0.08f, 0.08f, 0.08f, 0.94f);
     colors[ImGuiCol_Border]                 = ImVec4(0.30f, 0.30f, 0.30f, 0.50f);
     colors[ImGuiCol_BorderShadow]           = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
     colors[ImGuiCol_FrameBg]                = ImVec4(0.15f, 0.15f, 0.15f, 0.90f);
-    colors[ImGuiCol_FrameBgHovered]         = ImVec4(0.90f, 0.50f, 0.20f, 0.40f); // Orange hover
-    colors[ImGuiCol_FrameBgActive]          = ImVec4(0.90f, 0.50f, 0.20f, 0.67f); // Orange active
-    colors[ImGuiCol_TitleBg]                = ImVec4(0.90f, 0.50f, 0.20f, 0.80f); // Orange title
-    colors[ImGuiCol_TitleBgActive]          = ImVec4(0.95f, 0.55f, 0.25f, 1.00f); // Brighter orange
+    colors[ImGuiCol_FrameBgHovered]         = ImVec4(0.90f, 0.50f, 0.20f, 0.40f);
+    colors[ImGuiCol_FrameBgActive]          = ImVec4(0.90f, 0.50f, 0.20f, 0.67f);
+    colors[ImGuiCol_TitleBg]                = ImVec4(0.90f, 0.50f, 0.20f, 0.80f);
+    colors[ImGuiCol_TitleBgActive]          = ImVec4(0.95f, 0.55f, 0.25f, 1.00f);
     colors[ImGuiCol_TitleBgCollapsed]       = ImVec4(0.00f, 0.00f, 0.00f, 0.51f);
     colors[ImGuiCol_MenuBarBg]              = ImVec4(0.14f, 0.14f, 0.14f, 1.00f);
     colors[ImGuiCol_ScrollbarBg]            = ImVec4(0.02f, 0.02f, 0.02f, 0.53f);
     colors[ImGuiCol_ScrollbarGrab]          = ImVec4(0.31f, 0.31f, 0.31f, 1.00f);
-    colors[ImGuiCol_ScrollbarGrabHovered]   = ImVec4(0.90f, 0.50f, 0.20f, 1.00f); // Orange
-    colors[ImGuiCol_ScrollbarGrabActive]    = ImVec4(0.95f, 0.55f, 0.25f, 1.00f); // Brighter orange
-    colors[ImGuiCol_CheckMark]              = ImVec4(0.95f, 0.55f, 0.25f, 1.00f); // Orange checkmark
-    colors[ImGuiCol_SliderGrab]             = ImVec4(0.90f, 0.50f, 0.20f, 1.00f); // Orange slider
-    colors[ImGuiCol_SliderGrabActive]       = ImVec4(0.95f, 0.60f, 0.30f, 1.00f); // Bright orange
-    colors[ImGuiCol_Button]                 = ImVec4(0.90f, 0.50f, 0.20f, 0.60f); // Orange button
-    colors[ImGuiCol_ButtonHovered]          = ImVec4(0.95f, 0.55f, 0.25f, 1.00f); // Bright orange hover
-    colors[ImGuiCol_ButtonActive]           = ImVec4(1.00f, 0.60f, 0.30f, 1.00f); // Brightest orange
-    colors[ImGuiCol_Header]                 = ImVec4(0.90f, 0.50f, 0.20f, 0.55f); // Orange header
+    colors[ImGuiCol_ScrollbarGrabHovered]   = ImVec4(0.90f, 0.50f, 0.20f, 1.00f);
+    colors[ImGuiCol_ScrollbarGrabActive]    = ImVec4(0.95f, 0.55f, 0.25f, 1.00f);
+    colors[ImGuiCol_CheckMark]              = ImVec4(0.95f, 0.55f, 0.25f, 1.00f);
+    colors[ImGuiCol_SliderGrab]             = ImVec4(0.90f, 0.50f, 0.20f, 1.00f);
+    colors[ImGuiCol_SliderGrabActive]       = ImVec4(0.95f, 0.60f, 0.30f, 1.00f);
+    colors[ImGuiCol_Button]                 = ImVec4(0.90f, 0.50f, 0.20f, 0.60f);
+    colors[ImGuiCol_ButtonHovered]          = ImVec4(0.95f, 0.55f, 0.25f, 1.00f);
+    colors[ImGuiCol_ButtonActive]           = ImVec4(1.00f, 0.60f, 0.30f, 1.00f);
+    colors[ImGuiCol_Header]                 = ImVec4(0.90f, 0.50f, 0.20f, 0.55f);
     colors[ImGuiCol_HeaderHovered]          = ImVec4(0.95f, 0.55f, 0.25f, 0.80f);
     colors[ImGuiCol_HeaderActive]           = ImVec4(0.95f, 0.55f, 0.25f, 1.00f);
     colors[ImGuiCol_Separator]              = ImVec4(0.43f, 0.43f, 0.50f, 0.50f);
-    colors[ImGuiCol_SeparatorHovered]       = ImVec4(0.90f, 0.50f, 0.20f, 0.78f); // Orange
-    colors[ImGuiCol_SeparatorActive]        = ImVec4(0.95f, 0.55f, 0.25f, 1.00f); // Bright orange
+    colors[ImGuiCol_SeparatorHovered]       = ImVec4(0.90f, 0.50f, 0.20f, 0.78f);
+    colors[ImGuiCol_SeparatorActive]        = ImVec4(0.95f, 0.55f, 0.25f, 1.00f);
     colors[ImGuiCol_ResizeGrip]             = ImVec4(0.90f, 0.50f, 0.20f, 0.25f);
     colors[ImGuiCol_ResizeGripHovered]      = ImVec4(0.95f, 0.55f, 0.25f, 0.67f);
     colors[ImGuiCol_ResizeGripActive]       = ImVec4(0.95f, 0.60f, 0.30f, 0.95f);
@@ -366,20 +359,22 @@ int main(int argc, char** argv) {
     colors[ImGuiCol_NavWindowingDimBg]      = ImVec4(0.80f, 0.80f, 0.80f, 0.20f);
     colors[ImGuiCol_ModalWindowDimBg]       = ImVec4(0.80f, 0.80f, 0.80f, 0.35f);
     
-    // Initialize ImGui backends
-    ImGui_ImplGLUT_Init();
-    ImGui_ImplOpenGL3_Init("#version 130");
+    // Create demos
+    demos.push_back(std::make_unique<ParticleDemo>());
+    demos.push_back(std::make_unique<WaveDemo>());
+    demos.push_back(std::make_unique<MandelbrotDemo>());
     
-    // Setup callbacks (after ImGui is fully initialized)
+    std::cout << "Starting with: " << demos[0]->getName() << "\n\n";
+    
+    // Setup callbacks
     glutDisplayFunc(display);
-    glutReshapeFunc(reshape);
     glutKeyboardFunc(keyboard);
     glutSpecialFunc(specialKeys);
-    glutMouseFunc(ImGui_ImplGLUT_MouseFunc);
-    glutMotionFunc(ImGui_ImplGLUT_MotionFunc);
-    glutPassiveMotionFunc(ImGui_ImplGLUT_MotionFunc);  // For hover effects
-    
-    std::cout << "Running Particle System demo...\n";
+    glutReshapeFunc(reshape);
+    glutMouseFunc(mouse);
+    glutMotionFunc(motion);
+    glutPassiveMotionFunc(ImGui_ImplGLUT_MotionFunc);
+    glutMouseWheelFunc(mouseWheel);
     
     // Main loop
     glutMainLoop();
@@ -387,4 +382,3 @@ int main(int argc, char** argv) {
     cleanup();
     return 0;
 }
-
