@@ -1,198 +1,95 @@
-# CUDA + FreeGLUT Demos
+# CUDA + FreeGLUT + ImGui Demos
 
-A minimal collection of interactive CUDA demos using FreeGLUT and OpenGL for visualization on Windows.
-
-## Demos Included
-
-1. **Particle System** - Animated particles with dynamic colors
-2. **Wave Simulation** - Rippling wave interference patterns
-3. **Mandelbrot Fractal** - Interactive fractal explorer with zoom and pan
+Interactive CUDA demos with real-time UI controls. Includes particle system, wave simulation, and Mandelbrot fractal explorer.
 
 ## Prerequisites
 
-### Required Software
-
 - **Windows 10/11** (64-bit)
-- **Visual Studio 2022** (or 2019)
-  - Desktop development with C++ workload
+- **Visual Studio 2019 or 2022** with C++ workload
+- **CUDA Toolkit** (project uses 12.2, but 11.x or 12.x work)
 - **NVIDIA GPU** with CUDA support
-- **CUDA Toolkit 12.x** (or 11.x)
-  - Download from: https://developer.nvidia.com/cuda-downloads
-  - Make sure to install the Visual Studio integration
-- **FreeGLUT** and **GLEW** (statically linked)
-  - Download from: https://freeglut.sourceforge.net/ and https://glew.sourceforge.net/
-  - Or use vcpkg: `vcpkg install freeglut:x64-windows-static glew:x64-windows-static`
 
-### Installing FreeGLUT and GLEW (Static Libraries)
+## Quick Setup
 
-#### Option 1: Using vcpkg (Recommended)
+### 1. Install vcpkg and Libraries
 
 ```powershell
-# Install vcpkg if you haven't already
+# Clone vcpkg
 git clone https://github.com/Microsoft/vcpkg.git
 cd vcpkg
 .\bootstrap-vcpkg.bat
 
-# Install required libraries (static versions - no DLLs needed!)
-.\vcpkg install freeglut:x64-windows-static glew:x64-windows-static
+# Install dependencies (static libraries)
+.\vcpkg install freeglut:x64-windows-static glew:x64-windows-static imgui[opengl3-binding,glut-binding]:x64-windows-static
 
 # Integrate with Visual Studio
 .\vcpkg integrate install
 ```
 
-**Note:** The project uses **static libraries** so you don't need any DLLs. Everything is compiled into the executable.
+### 2. Update vcpkg Path (if needed)
 
-#### Option 2: Manual Installation (Advanced)
+If your vcpkg is not in `C:\Users\matth\GIT\vcpkg`, edit `CudaDemos.vcxproj`:
+- Search for `C:\Users\matth\GIT\vcpkg\installed\x64-windows-static`
+- Replace with your vcpkg path
 
-1. Download FreeGLUT and GLEW **static library** versions for Windows
-2. Build as static libraries or download pre-built static versions
-3. Update `CudaDemos.vcxproj`:
-   - Add include directories to `AdditionalIncludeDirectories`
-   - Add library directories to `AdditionalLibraryDirectories`
-   - Make sure `GLEW_STATIC` and `FREEGLUT_STATIC` are defined in preprocessor definitions
-
-**Note:** Using vcpkg is much easier and handles all paths automatically!
-
-## Building the Project
-
-### Using Visual Studio
+### 3. Build and Run
 
 1. Open `CudaDemos.sln` in Visual Studio
-2. Make sure the platform is set to **x64** (top toolbar)
-3. Select **Debug** or **Release** configuration
-4. Build the solution: **Build → Build Solution** (or press `Ctrl+Shift+B`)
-5. Run: **Debug → Start Without Debugging** (or press `Ctrl+F5`)
-
-### Important Notes
-
-- **The project uses static libraries (no DLLs required)** - FreeGLUT and GLEW are compiled into the executable
-  - Preprocessor defines: `GLEW_STATIC` and `FREEGLUT_STATIC`
-  - Uses vcpkg's `x64-windows-static` triplet
-
-- **The project is configured for CUDA 12.2 and Visual Studio 2019 (v142) toolset** - compatible with VS 2019 and VS 2022
-  
-- If you have a different CUDA version, edit `CudaDemos.vcxproj`:
-  - Find and replace `CUDA 12.2` with your version (e.g., `CUDA 11.8`, `CUDA 12.3`, etc.)
-  - Look for lines containing `BuildCustomizations\CUDA 12.2`
-  
-- The vcpkg paths are hardcoded to `C:\Users\matth\GIT\vcpkg\installed\x64-windows-static`
-  - If your vcpkg is in a different location, update the paths in `CudaDemos.vcxproj`
-  - Search for `vcpkg\installed` and replace with your vcpkg path
+2. Set platform to **x64**
+3. Build: **Ctrl+Shift+B**
+4. Run: **Ctrl+F5**
 
 ## Controls
 
-### General
-- **1** - Switch to Particle System demo
-- **2** - Switch to Wave Simulation demo
-- **3** - Switch to Mandelbrot Fractal demo
-- **ESC** - Exit application
-
-### Mandelbrot Demo
-- **Arrow Keys** - Pan around the fractal
-- **+/-** - Zoom in/out
-
-## Project Structure
-
-```
-cuda-demos/
-├── CudaDemos.sln              # Visual Studio solution
-├── CudaDemos.vcxproj          # Project file with CUDA configuration
-├── CudaDemos.vcxproj.filters  # Project filters for organization
-├── main.cpp                   # Main application with OpenGL/GLEW/CUDA interop
-├── demos.cu                   # CUDA kernels (Particles, Waves, Mandelbrot)
-├── setup.ps1                  # Environment check script
-├── .gitignore                 # Git ignore rules for VS and CUDA
-└── README.md                  # This file
-```
+- **0-3**: Switch demos (0=Test, 1=Particles, 2=Waves, 3=Mandelbrot)
+- **H**: Hide/show UI panel
+- **ESC**: Exit
+- **UI Panel**: Use buttons and sliders for interactive control
 
 ## Troubleshooting
 
-### Build Errors
+### CUDA Version Mismatch
+```
+Error: CUDA 12.2.props not found
+```
+**Fix:** Edit `CudaDemos.vcxproj`, search for `CUDA 12.2` and replace with your version (e.g., `CUDA 11.8`)
 
-**"Cannot find CUDA Toolkit"** or **"CUDA 12.2.props not found"**
-- Ensure CUDA is installed and the `CUDA_PATH` environment variable is set
-- If you have a different CUDA version, edit `CudaDemos.vcxproj` and replace `12.2` with your version
-- Restart Visual Studio after CUDA installation
+### Build Tools Not Found
+```
+Error: The build tools for v142 cannot be found
+```
+**Fix:** Install VS 2019 build tools, or change `<PlatformToolset>v142</PlatformToolset>` to `v143` in the .vcxproj
 
-**"The build tools for v142 cannot be found"**
-- Install the Visual Studio 2019 build tools component
-- Or edit `CudaDemos.vcxproj` and change `<PlatformToolset>v142</PlatformToolset>` to `v143` (VS 2022)
+### Libraries Not Found
+```
+Error: cannot open file 'imgui.lib' / 'glew32.lib' / 'freeglut.lib'
+```
+**Fix:** 
+1. Ensure you installed static versions: `.\vcpkg install freeglut:x64-windows-static glew:x64-windows-static imgui[opengl3-binding,glut-binding]:x64-windows-static`
+2. Run `.\vcpkg integrate install`
+3. Verify vcpkg path in `CudaDemos.vcxproj` matches your installation
 
-**"freeglut.lib or glew32.lib not found"**
-- Make sure you installed the **static** versions: `vcpkg install freeglut:x64-windows-static glew:x64-windows-static`
-- Then ran: `vcpkg integrate install`
-- Check that the vcpkg path in `CudaDemos.vcxproj` matches your vcpkg installation location
-- The project looks for libraries in: `C:\Users\matth\GIT\vcpkg\installed\x64-windows-static\lib`
+### Runtime: GPU Not Found
+```
+Error: This project requires a CUDA capable GPU
+```
+**Fix:** Update NVIDIA drivers, verify GPU with `nvidia-smi` command
 
-**"glew32.dll or freeglut.dll not found"**
-- This shouldn't happen - the project uses static libraries (no DLLs needed)
-- If you see this error, make sure `GLEW_STATIC` and `FREEGLUT_STATIC` are defined in preprocessor definitions
+### Runtime: DLL Not Found
+```
+Error: glew32.dll or freeglut.dll not found
+```
+**Fix:** This shouldn't happen with static build. Verify `GLEW_STATIC` and `FREEGLUT_STATIC` are in preprocessor definitions.
 
-### Runtime Errors
+## Project Files
 
-**"This project requires a CUDA capable GPU"**
-- Verify you have an NVIDIA GPU with CUDA support
-- Update your NVIDIA drivers to the latest version
-- Check Device Manager to ensure GPU is recognized
-
-**Black screen or application crashes**
-- Update your graphics drivers to the latest version
-- Try the Debug build for more detailed error information
-- Check Visual Studio Output window for CUDA errors
-- Verify your GPU has CUDA support by running `nvidia-smi` in command prompt
-
-## Customizing Demos
-
-All CUDA kernels are in `demos.cu` - only **~180 lines** of GPU code! Each demo is a simple kernel function:
-- `particleKernel` - Modify particle behavior and colors
-- `waveKernel` - Adjust wave parameters and interference patterns
-- `mandelbrotKernel` - Change fractal parameters and coloring
-
-The main application in `main.cpp` handles:
-- OpenGL window setup with FreeGLUT
-- GLEW initialization for OpenGL extensions
-- CUDA-OpenGL interoperability (pixel buffer objects)
-- Keyboard controls and demo switching
-
-The code is designed to be minimal and easy to understand. Feel free to experiment and add your own demos!
+```
+CudaDemos.sln        - Visual Studio solution
+CudaDemos.vcxproj    - Project configuration
+main.cpp             - Application and UI code
+demos.cu             - CUDA kernels
+```
 
 ## License
 
-This project is provided as-is for educational and demonstration purposes.
-
-## Quick Start Summary
-
-1. **Install Prerequisites:**
-   - Visual Studio 2019 or 2022 with C++ support
-   - CUDA Toolkit (project configured for 12.2, but any 11.x or 12.x works)
-   - NVIDIA GPU with CUDA support
-
-2. **Install vcpkg and Libraries (Static - No DLLs!):**
-   ```powershell
-   git clone https://github.com/Microsoft/vcpkg.git
-   cd vcpkg
-   .\bootstrap-vcpkg.bat
-   .\vcpkg install freeglut:x64-windows-static glew:x64-windows-static
-   .\vcpkg integrate install
-   ```
-
-3. **Update vcpkg Path (if needed):**
-   - If your vcpkg is not in `C:\Users\matth\GIT\vcpkg`, edit `CudaDemos.vcxproj`
-   - Search for `vcpkg\installed\x64-windows-static` and replace with your path
-
-4. **Build and Run:**
-   - Open `CudaDemos.sln` in Visual Studio
-   - Set platform to **x64**
-   - Build (Ctrl+Shift+B) and Run (Ctrl+F5)
-
-5. **Enjoy the demos!** Press 1, 2, 3 to switch between them.
-
-## Why Static Libraries?
-
-The project uses **static linking** for FreeGLUT and GLEW, which means:
-- ✅ **No DLL dependencies** - Everything is compiled into the executable
-- ✅ **Easier distribution** - Just share the .exe file (plus CUDA runtime on target system)
-- ✅ **No DLL version conflicts** - The exact library versions are baked in
-- ⚠️ **Larger executable** - About 2-3 MB larger than dynamic version
-- ⚠️ **Longer compile time** - But only on first build
-
+Educational and demonstration purposes. Feel free to modify and extend.
