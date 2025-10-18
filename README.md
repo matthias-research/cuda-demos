@@ -1,6 +1,6 @@
-# CUDA + FreeGLUT + ImGui Demos
+# CUDA + OpenGL Demos
 
-Interactive CUDA demos with real-time UI controls. Includes particle system, wave simulation, and Mandelbrot fractal explorer.
+Interactive 3D graphics demos with real-time UI controls. Includes a rotating cube with Phong shading (OpenGL) and Mandelbrot fractal explorer (CUDA).
 
 ## Prerequisites
 
@@ -39,9 +39,25 @@ If your vcpkg is not in `C:\Users\matth\GIT\vcpkg`, edit `CudaDemos.vcxproj`:
 3. Build: **Ctrl+Shift+B**
 4. Run: **Ctrl+F5**
 
+## Demos
+
+### 1. 3D Boxes (OpenGL)
+A rotating cube with Phong shading. Features:
+- Real-time Phong lighting (ambient, diffuse, specular)
+- Adjustable rotation speed
+- Interactive camera controls
+- Adjustable light position and material properties
+
+### 2. Mandelbrot Fractal (CUDA)
+GPU-accelerated Mandelbrot set visualization. Features:
+- Real-time zoom and pan with mouse
+- Smooth color gradients
+- Arrow key navigation
+
 ## Controls
 
-- **0-3**: Switch demos (0=Test, 1=Particles, 2=Waves, 3=Mandelbrot)
+- **1**: Switch to 3D Boxes demo
+- **2**: Switch to Mandelbrot Fractal demo
 - **H**: Hide/show UI panel
 - **ESC**: Exit
 - **UI Panel**: Use buttons and sliders for interactive control
@@ -87,7 +103,10 @@ Error: glew32.dll or freeglut.dll not found
 CudaDemos.sln        - Visual Studio solution
 CudaDemos.vcxproj    - Project configuration
 main.cpp             - Application and UI code
-demos.cu             - CUDA kernels
+BoxesDemo.h/cpp      - OpenGL 3D cube with Phong shading
+MandelbrotDemo.h/cpp - Mandelbrot fractal
+MandelbrotDemo.cu    - CUDA kernel for Mandelbrot
+Demo.h               - Base demo interface
 ```
 
 ## License

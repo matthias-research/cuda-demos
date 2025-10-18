@@ -10,8 +10,7 @@
 #include <imgui_impl_glut.h>
 
 #include "Demo.h"
-#include "ParticleDemo.h"
-#include "WaveDemo.h"
+#include "BoxesDemo.h"
 #include "MandelbrotDemo.h"
 
 // Window dimensions (can change on resize)
@@ -117,7 +116,7 @@ void display() {
         ImGui::NewFrame();
         
         ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(320, 500), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(320, 750), ImGuiCond_FirstUseEver);
         ImGui::Begin("CUDA Demo Controls", &showUI, ImGuiWindowFlags_None);
         
         ImGui::Text("FPS: %.1f", fps);
@@ -166,12 +165,6 @@ void keyboard(unsigned char key, int x, int y) {
             if (currentDemoIndex != 1) {
                 currentDemoIndex = 1;
                 std::cout << "Switched to: " << demos[1]->getName() << "\n";
-            }
-            break;
-        case '3':
-            if (currentDemoIndex != 2) {
-                currentDemoIndex = 2;
-                std::cout << "Switched to: " << demos[2]->getName() << "\n";
             }
             break;
         case 'h':
@@ -259,10 +252,11 @@ void cleanup() {
 }
 
 int main(int argc, char** argv) {
-    std::cout << "CUDA + FreeGLUT + ImGui Demos\n";
-    std::cout << "==============================\n";
+    std::cout << "CUDA + OpenGL Demos\n";
+    std::cout << "===================\n";
     std::cout << "Controls:\n";
-    std::cout << "  1/2/3: Switch demos\n";
+    std::cout << "  1: 3D Boxes (OpenGL)\n";
+    std::cout << "  2: Mandelbrot Fractal (CUDA)\n";
     std::cout << "  H: Hide/show UI\n";
     std::cout << "  ESC: Exit\n";
     std::cout << "Mandelbrot controls:\n";
@@ -360,8 +354,7 @@ int main(int argc, char** argv) {
     colors[ImGuiCol_ModalWindowDimBg]       = ImVec4(0.80f, 0.80f, 0.80f, 0.35f);
     
     // Create demos
-    demos.push_back(std::make_unique<ParticleDemo>());
-    demos.push_back(std::make_unique<WaveDemo>());
+    demos.push_back(std::make_unique<BoxesDemo>());
     demos.push_back(std::make_unique<MandelbrotDemo>());
     
     std::cout << "Starting with: " << demos[0]->getName() << "\n\n";

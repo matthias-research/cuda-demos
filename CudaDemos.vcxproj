@@ -96,19 +96,15 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="ParticleDemo.cpp" />
-    <ClCompile Include="WaveDemo.cpp" />
+    <ClCompile Include="BoxesDemo.cpp" />
     <ClCompile Include="MandelbrotDemo.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Demo.h" />
-    <ClInclude Include="ParticleDemo.h" />
-    <ClInclude Include="WaveDemo.h" />
+    <ClInclude Include="BoxesDemo.h" />
     <ClInclude Include="MandelbrotDemo.h" />
   </ItemGroup>
   <ItemGroup>
-    <CudaCompile Include="ParticleDemo.cu" />
-    <CudaCompile Include="WaveDemo.cu" />
     <CudaCompile Include="MandelbrotDemo.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
