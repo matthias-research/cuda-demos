@@ -24,6 +24,8 @@ struct RigidBody
 
     int firstVertex;
     int numVertices;
+
+    Bounds3 localBounds;
 };
 
 struct RigidBodyContact
@@ -104,7 +106,7 @@ struct RigidBodyDeviceData
     DeviceBuffer<Vec4> bodyUppers;
 };
 
-__global__ void device_computeBodyBounds(RigidBodyDeviceData data)
+__global__ void device_computeBodyWorldBounds(RigidBodyDeviceData data)
 {
     int bodyNr = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -112,21 +114,10 @@ __global__ void device_computeBodyBounds(RigidBodyDeviceData data)
         return;
 
     RigidBody body = data.bodies[bodyNr];
-    
-    // Compute bounds from vertices
-    Bounds3 bounds;
-    bounds.minimum = Vec3(MaxFloat, MaxFloat, MaxFloat);
-    bounds.maximum = Vec3(-MaxFloat, -MaxFloat, -MaxFloat);
-    
-    for (int i = 0; i < body.numVertices; i++)
-    {
-        Vec3 v = body.transform * data.vertices[body.firstVertex + i];
-        bounds.minimum = bounds.minimum.min(v);
-        bounds.maximum = bounds.maximum.max(v);
-    }
+    Bounds3 worldBounds = body.localBounds.transform(body.transform);
 
-    data.bodyLowers[bodyNr] = Vec4(bounds.minimum);
-    data.bodyUppers[bodyNr] = Vec4(bounds.maximum);
+    data.bodyLowers[bodyNr] = Vec4(worldBounds.minimum);
+    data.bodyUppers[bodyNr] = Vec4(worldBounds.maximum);
 }
 
 
