@@ -107,6 +107,7 @@
     <ClInclude Include="Vec.h" />
     <ClInclude Include="Camera.h" />
     <ClInclude Include="CudaUtils.h" />
+    <ClInclude Include="Geometry.h" />
     <ClInclude Include="BVH.h" />
     <ClInclude Include="RigidBodiyKernels.h" />
     <ClInclude Include="BoxesDemo.h" />

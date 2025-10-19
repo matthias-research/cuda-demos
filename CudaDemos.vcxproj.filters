@@ -41,6 +41,9 @@
     <ClInclude Include="CudaUtils.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Geometry.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="BVH.h">
       <Filter>Header Files</Filter>
     </ClInclude>
