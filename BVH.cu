@@ -62,6 +62,15 @@ struct BVHBuilderDeviceData
 };
 
 // -------------------------------------------------------------------------------------------
+static void DeviceAlloc(void** ptr, size_t size)
+{
+	cudaCheck(cudaMalloc(ptr, size));
+}
+
+static void DeviceFree(void* ptr)
+{
+	cudaCheck(cudaFree(ptr));
+}
 
 void BVHBuilder::sortCellIndices(int* keys, int* values, int num, int numBits)
 {
@@ -73,7 +82,7 @@ void BVHBuilder::sortCellIndices(int* keys, int* values, int num, int numBits)
 
 	mDeviceData->tempBuffer.resize(tempSize);
 
-	cub::DeviceRadixSort::SortPairs(mDeviceData->tempBuffer, tempSize, d_keys, d_values, num, 0, numBits);
+//	cub::DeviceRadixSort::SortPairs(mDeviceData->tempBuffer, tempSize, d_keys, d_values, num, 0, numBits);
 
 	if (d_keys.Current() != keys)
 		cudaCheck(cudaMemcpy(keys, d_keys.Current(), sizeof(int) * num, cudaMemcpyDeviceToDevice));
@@ -93,7 +102,7 @@ void BVHBuilder::sortCellIndices(uint64_t* keys, int* values, int num, int numBi
 
 	mDeviceData->tempBuffer.resize(tempSize);
 
-	cub::DeviceRadixSort::SortPairs(mDeviceData->tempBuffer, tempSize, d_keys, d_values, num, 0, numBits);
+//	cub::DeviceRadixSort::SortPairs(mDeviceData->tempBuffer, tempSize, d_keys, d_values, num, 0, numBits);
 	if (d_keys.Current() != keys)
 		cudaCheck(cudaMemcpy(keys, d_keys.Current(), sizeof(uint64_t) * num, cudaMemcpyDeviceToDevice));
 	if (d_values.Current() != values)
@@ -647,7 +656,7 @@ void BVHBuilder::build(BVH& bvh,
 		while ((1 << numGroupBits) < numGroups)
 			numGroupBits++;
 
-		CubWrapper::SortCellIndices(mDeviceData->longKeys.buffer, mDeviceData->indices.buffer, numItems, numGroupBits + MORTON_BITS);
+		sortCellIndices(mDeviceData->longKeys.buffer, mDeviceData->indices.buffer, numItems, numGroupBits + MORTON_BITS);
 	}
     else
     {
@@ -658,7 +667,7 @@ void BVHBuilder::build(BVH& bvh,
 
         CalculateMortonCodes<<<numItems / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK>>>(
             *mDeviceData, itemLowers, itemUppers, totalBounds.minimum, invEdges);
-        CubWrapper::SortCellIndices(mDeviceData->keys.buffer, mDeviceData->indices.buffer, numItems, MORTON_BITS);
+        sortCellIndices(mDeviceData->keys.buffer, mDeviceData->indices.buffer, numItems, MORTON_BITS);
     }
 
 	// calculate deltas between adjacent keys
@@ -677,4 +686,3 @@ void BVHBuilder::build(BVH& bvh,
 
 }
 
-} // namespace MeshTools

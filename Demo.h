@@ -4,8 +4,6 @@
 #include <vector_types.h>
 #include "Vec.h"
 
-using namespace Vec;
-
 class Camera;
 
 class Demo {

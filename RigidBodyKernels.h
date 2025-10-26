@@ -10,8 +10,8 @@ struct RigidBodyParams
 };
 struct RigidBody
 {
-    Transform transform;
-    Transform prevTransform;
+    Transform pose;
+    Transform prevPose;
 
     Vec3 velocity;
     Vec3 angularVelocity;
@@ -79,7 +79,7 @@ struct RigidBodyDeviceData
         s += contacts.capacity * sizeof(RigidBodyContact);
         s += bodyLowers.capacity * sizeof(Vec4);
         s += bodyUppers.capacity * sizeof(Vec4);
-        s += bvh.getAllocationSize();
+        // s += bvh.getAllocationSize();
         return s;
     }
 
@@ -114,14 +114,15 @@ __global__ void device_computeBodyWorldBounds(RigidBodyDeviceData data)
         return;
 
     RigidBody body = data.bodies[bodyNr];
-    Bounds3 worldBounds = body.localBounds.transform(body.transform);
+    Bounds3 worldBounds = body.localBounds.transform(body.pose);
 
     data.bodyLowers[bodyNr] = Vec4(worldBounds.minimum);
     data.bodyUppers[bodyNr] = Vec4(worldBounds.maximum);
 }
 
 
-__device__ void device_findFaceContactPlane(RigidBodyDeviceData data, int bodyNr0, int bodyNr1, float& minDepth, Plane& minPlane0, Plane& minPlane1)
+__device__ void device_findFaceContactPlane(RigidBodyDeviceData data, int bodyNr0, int bodyNr1, 
+    float& minDepth, int& minFaceNr0, int& minFaceNr1, Vec3& normal, bool swap = false)
 {
     RigidBody body0 = data.bodies[bodyNr0];
     RigidBody body1 = data.bodies[bodyNr1];
@@ -130,8 +131,8 @@ __device__ void device_findFaceContactPlane(RigidBodyDeviceData data, int bodyNr
     {
         Plane facePlane = data.facePlanes[body0.firstFace + i];
         // working in the frame of body1
-        Plane worldPlane = body0.transform(facePlane);
-        Plane plane = body1.transformInv(worldPlane);
+        Plane worldPlane = body0.pose.transform(facePlane);
+        Plane plane = body1.pose.transformInv(worldPlane);
 
         float maxDepth = -MaxFloat;
 
@@ -139,7 +140,7 @@ __device__ void device_findFaceContactPlane(RigidBodyDeviceData data, int bodyNr
         {
             Vec3 p = data.vertices[body1.firstVertex + j];
             float depth = -plane.height(p);
-            maxDepth = max(maxDepth, depth);
+            maxDepth = Max(maxDepth, depth);
 
             if (maxDepth > minDepth)
                 break;
@@ -147,9 +148,10 @@ __device__ void device_findFaceContactPlane(RigidBodyDeviceData data, int bodyNr
         if (maxDepth < minDepth)
         {
             minDepth = maxDepth;
-            minPlane0 = worldPlane;
-            minPlane1 = worldPlane;
-            minPlane1.d -= maxDepth;
+            minFaceNr0 = i;
+            minFaceNr1 = -1; // will determine if this plane wins
+            bool swapped = false;    // todo
+            normal = swapped ? -worldPlane.n : worldPlane.n;
 
             if (minDepth < -data.params.contactBand) // separation axis found
                 return;
@@ -157,7 +159,8 @@ __device__ void device_findFaceContactPlane(RigidBodyDeviceData data, int bodyNr
     }
 }
 
-__device__ void device_findEdgeContactPlane(RigidBodyDeviceData data, int bodyNr0, int bodyNr1, float& minDepth, Plane& minPlane0, Plane& minPlane1)
+__device__ void device_findEdgeContactPlane(RigidBodyDeviceData data, int bodyNr0, int bodyNr1, 
+    float& minDepth, int& minFaceNr0, int& minFaceNr1, Vec3& normal)
 {
     const float eps = 1e-5f;
 
@@ -175,14 +178,17 @@ __device__ void device_findEdgeContactPlane(RigidBodyDeviceData data, int bodyNr
             if (neighbor0 < faceNr0)
                 continue; // already processed
 
-            int id0 = data.faceIndices[start0 + i];
-            int id1 = data.faceIndices[start0 + (i + 1) % size0];
+            int id00 = data.faceIndices[start0 + i];
+            int id01 = data.faceIndices[start0 + (i + 1) % size0];
 
-            Vec3 p0 = body0.transform(data.vertices[body0.firstVertex + id0]);
-            Vec3 p1 = body0.transform(data.vertices[body0.firstVertex + id1]);
+            Vec3 p00 = body0.pose.transform(data.vertices[body0.firstVertex + id00]);
+            Vec3 p01 = body0.pose.transform(data.vertices[body0.firstVertex + id01]);
 
-            Vec3 cp0 = body0.transform(data.faceCenters[body0.firstFace + faceNr0]);
-            Vec3 cp1 = body0.transform(data.faceCenters[body0.firstFace + neighbor0]);
+            Vec3 c00 = body0.pose.transform(data.faceCenters[body0.firstFace + faceNr0]);
+            Vec3 c01 = body0.pose.transform(data.faceCenters[body0.firstFace + neighbor0]);
+
+            Vec3 fn00 = body0.pose.q.rotate(data.facePlanes[body0.firstFace + faceNr0].n);
+            Vec3 fn01 = body0.pose.q.rotate(data.facePlanes[body0.firstFace + neighbor0].n);
 
             for (int faceNr1 = 0; faceNr1 < body1.numFaces; faceNr1++)
             {
@@ -195,32 +201,32 @@ __device__ void device_findEdgeContactPlane(RigidBodyDeviceData data, int bodyNr
                     if (neighbor1 < faceNr1)
                         continue; // already processed
 
-                    int jd0 = data.faceIndices[start1 + j];
-                    int jd1 = data.faceIndices[start1 + (j + 1) % size1];
+                    int id10 = data.faceIndices[start1 + j];
+                    int id11 = data.faceIndices[start1 + (j + 1) % size1];
 
-                    Vec3 q0 = body1.transform(data.vertices[body1.firstVertex + jd0]);
-                    Vec3 q1 = body1.transform(data.vertices[body1.firstVertex + jd1]);
+                    Vec3 p10 = body1.pose.transform(data.vertices[body1.firstVertex + id10]);
+                    Vec3 p11 = body1.pose.transform(data.vertices[body1.firstVertex + id11]);
 
-                    Vec3 cq0 = body1.transform(data.faceCenters[body1.firstFace + faceNr1]);
-                    Vec3 cq1 = body1.transform(data.faceCenters[body1.firstFace + neighbor1]);
+                    Vec3 c10 = body1.pose.transform(data.faceCenters[body1.firstFace + faceNr1]);
+                    Vec3 c11 = body1.pose.transform(data.faceCenters[body1.firstFace + neighbor1]);
 
-                    Vec3 n = (p1 - p0).cross(q1 - q0).normalized();
+                    Vec3 n = (p01 - p00).cross(p11 - p10).normalized();
 
-                    if (n.dot(p0 - cp0) < 0.0f) 
+                    if (n.dot(p00 - c00) < 0.0f) 
                         n = -n;
-                        
-                    float depth = n.dot(p0 - q0);
+
+                    float depth = n.dot(p00 - p10);
 
                     if (depth >= minDepth)
                         continue;
 
-                    if (n.dot(p1 - cp1) < -eps)
+                    if (n.dot(p00 - c01) < -eps)
                         continue;
 
-                    if (n.dot(q0 - cq0) > eps)
+                    if (n.dot(p10 - c10) > eps)
                         continue;
 
-                    if (n.dot(q1 - cq1) < -eps)
+                    if (n.dot(p10 - c11) < -eps)
                         continue;
 
                     // float pt, qt;
@@ -233,9 +239,13 @@ __device__ void device_findEdgeContactPlane(RigidBodyDeviceData data, int bodyNr
 
                     if (depth < minDepth)
                     {
-                        minDepth = depth;
-                        minPlane0 = Plane(n, n.dot(p0));
-                        minPlane1 = Plane(n, n.dot(q0));
+                        normal = n;
+
+                        Vec3 fn10 = body1.pose.q.rotate(data.facePlanes[body1.firstFace + faceNr1].n);
+                        Vec3 fn11 = body1.pose.q.rotate(data.facePlanes[body1.firstFace + neighbor1].n);
+
+                        minFaceNr0 = n.dot(fn00) < n.dot(fn01) ? faceNr0 : neighbor0;
+                        minFaceNr1 = n.dot(fn10) < n.dot(fn11) ? faceNr1 : neighbor1;
                     }
                 }
             }
@@ -246,13 +256,18 @@ __device__ void device_findEdgeContactPlane(RigidBodyDeviceData data, int bodyNr
 __device__ void device_createPairContactPoints(RigidBodyDeviceData data, int bodyNr0, int bodyNr1)
 {
     float minDepth = MaxFloat;
-    Plane minPlane0;
-    Plane minPlane1;
+    Vec3 normal;
+    int minFaceNr0;
+    int minFaceNr1;
 
-    device_findFaceContactPlane(data, bodyNr0, bodyNr1, minDepth, minPlane0, minPlane1);
-    device_findFaceContactPlane(data, bodyNr1, bodyNr0, minDepth, minPlane1, minPlane0);
+    //device_findFaceContactPlane(data, bodyNr0, bodyNr1, minDepth, minFaceNr0, minFaceNr1, normal);
+    //device_findFaceContactPlane(data, bodyNr1, bodyNr0, minDepth, minFaceNr1, minFaceNr0, normal, true);
+    //device_findEdgeContactPlane(data, bodyNr0, bodyNr1, minDepth, minFaceNr0, minFaceNr1, normal);
 
-    device_findEdgeContactPlane(data, bodyNr0, bodyNr1, minDepth, minPlane0, minPlane1);
+    //if (minFaceNr1 < 0)
+    //{
+    //    
+    //}
 }
 
 __global__ void device_createContactPoints(RigidBodyDeviceData data)
@@ -262,7 +277,7 @@ __global__ void device_createContactPoints(RigidBodyDeviceData data)
     if (bodyNr0 >= data.numBodies)
         return;
 
-    Bounds3 bodyBounds = Bounds3(Vec3(data.bodyLowers[bodyNr0]), Vec3(data.bodyUppers[bodyNr0]));
+    Bounds3 bodyBounds = Bounds3(data.bodyLowers[bodyNr0].getXYZ(), data.bodyUppers[bodyNr0].getXYZ());
 
     int stack[32];
     stack[0] = data.bvh.mRootNodes[0];

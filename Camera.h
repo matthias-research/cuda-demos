@@ -6,8 +6,6 @@
 // Camera
 // by Matthias Müller
 
-using namespace Vec;
-
 // ---------------------------------------------------------------------------------------
 class Camera
 {

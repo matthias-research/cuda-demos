@@ -47,7 +47,7 @@
     <ClInclude Include="BVH.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="RigidBodiyKernels.h">
+    <ClInclude Include="RigidBodyKernels.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="BoxesDemo.h">

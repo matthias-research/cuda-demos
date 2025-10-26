@@ -5,8 +5,6 @@
 #include <vector>
 #include <cuda_runtime.h>
 
-using namespace Vec;
-
 // Vertex shader with Phong lighting
 const char* vertexShaderSource = R"(
 #version 330 core

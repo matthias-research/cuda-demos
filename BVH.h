@@ -86,8 +86,8 @@ public:
     // if nullptr, a single group is assumed
 
     void build(BVH& bvh,
-               const Vec::Vec4* itemLowers,
-               const Vec::Vec4* itemUppers,
+               const Vec4* itemLowers,
+               const Vec4* itemUppers,
                int numItems,
                const int* firstItemOfGroup = nullptr,
                int numGroups = 1);

@@ -1,7 +1,6 @@
 #pragma once
 
-#include "Vec3.h"
-
+#include "Vec.h"
 
 CUDA_CALLABLE inline bool getClosestPointsOnRays(const Ray& ray0, const Ray& ray1, float& t0, float& t1)
 {

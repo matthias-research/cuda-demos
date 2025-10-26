@@ -15,8 +15,6 @@
 #    define UNUSED(x) (void)(x)
 #endif
 
-namespace Vec
-{
 
 // ----------------------------------------------------------------------------
 #define Pi 3.141592653589793f
@@ -2752,5 +2750,3 @@ CUDA_CALLABLE_DEVICE inline Quadric AtomicAdd(Quadric* q, Quadric val)
     return old;
 }
 
-
-}

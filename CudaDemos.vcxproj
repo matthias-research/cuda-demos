@@ -108,14 +108,14 @@
     <ClInclude Include="Camera.h" />
     <ClInclude Include="CudaUtils.h" />
     <ClInclude Include="Geometry.h" />
-    <ClInclude Include="BVH.h" />
-    <ClInclude Include="RigidBodiyKernels.h" />
+    <!-- Temporarily disabled: <ClInclude Include="BVH.h" /> -->
+    <!-- Temporarily disabled: <ClInclude Include="RigidBodyKernels.h" /> -->
     <ClInclude Include="BoxesDemo.h" />
     <ClInclude Include="MandelbrotDemo.h" />
   </ItemGroup>
   <ItemGroup>
-    <CudaCompile Include="BVH.cu" />
-    <CudaCompile Include="RigidBody.cu" />
+    <!-- Temporarily disabled: <CudaCompile Include="BVH.cu" /> -->
+    <!-- Temporarily disabled: <CudaCompile Include="RigidBody.cu" /> -->
     <CudaCompile Include="MandelbrotDemo.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

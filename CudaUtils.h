@@ -127,6 +127,11 @@ struct DeviceBuffer
         cudaCheck(cudaMemcpy(buffer + oldSize, other.buffer, other.size * sizeof(T), cudaMemcpyDeviceToDevice));
     }
 
+    size_t allocationSize() const
+    {
+        return capacity * sizeof(T);
+    }
+
     void operator=(const DeviceBuffer& d)
     {
         if (!d.buffer)

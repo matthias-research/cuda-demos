@@ -40,7 +40,6 @@ __global__ void mandelbrotKernel(uchar4* ptr, unsigned int width, unsigned int h
         g = (unsigned char)(15.0f * (1.0f - t) * (1.0f - t) * t * t * 255.0f);
         b = (unsigned char)(8.5f * (1.0f - t) * (1.0f - t) * (1.0f - t) * t * 255.0f);
     }
-    
     ptr[idx] = make_uchar4(r, g, b, 255);
 }
 
