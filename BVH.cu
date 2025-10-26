@@ -1,9 +1,9 @@
 #include "BVH.h"
 #include "CudaUtils.h"
-#include "cub/cub.cuh"
 
 #include <thrust/device_ptr.h>
 #include <thrust/extrema.h>
+#include <thrust/sort.h>
 
 #include <vector>
 
@@ -26,7 +26,6 @@ struct BVHBuilderDeviceData
 		rangeRights.free();
 		numChildren.free();
 		boundsOfGroups.free();
-		tempBuffer.free();
 		numItems = 0;
 		numGroups = 0;
 	}
@@ -43,7 +42,6 @@ struct BVHBuilderDeviceData
 		s += rangeRights.allocationSize();
 		s += numChildren.allocationSize();
 		s += boundsOfGroups.allocationSize();
-		s += tempBuffer.allocationSize();
 		return s;
 	}
 
@@ -58,7 +56,6 @@ struct BVHBuilderDeviceData
 	DeviceBuffer<int> rangeRights;
 	DeviceBuffer<int> numChildren;
 	DeviceBuffer<int> boundsOfGroups; // fixed point to be able to use integer atomicMin/Max, 6 values per bound
-	DeviceBuffer<unsigned char> tempBuffer;
 };
 
 // -------------------------------------------------------------------------------------------
@@ -74,39 +71,19 @@ static void DeviceFree(void* ptr)
 
 void BVHBuilder::sortCellIndices(int* keys, int* values, int num, int numBits)
 {
-	cub::DoubleBuffer<int> d_keys(keys, keys + num);
-	cub::DoubleBuffer<int> d_values(values, values + num);
-
-	size_t tempSize;
-	cub::DeviceRadixSort::SortPairs(nullptr, tempSize, d_keys, d_values, int(num), 0, numBits);
-
-	mDeviceData->tempBuffer.resize(tempSize);
-
-//	cub::DeviceRadixSort::SortPairs(mDeviceData->tempBuffer, tempSize, d_keys, d_values, num, 0, numBits);
-
-	if (d_keys.Current() != keys)
-		cudaCheck(cudaMemcpy(keys, d_keys.Current(), sizeof(int) * num, cudaMemcpyDeviceToDevice));
-
-	if (d_values.Current() != values)
-		cudaCheck(cudaMemcpy(values, d_values.Current(), sizeof(int) * num, cudaMemcpyDeviceToDevice));
+	thrust::device_ptr<int> d_keys(keys);
+	thrust::device_ptr<int> d_values(values);
+	
+	thrust::sort_by_key(d_keys, d_keys + num, d_values);
 }
 
 
 void BVHBuilder::sortCellIndices(uint64_t* keys, int* values, int num, int numBits)
 {
-	cub::DoubleBuffer<uint64_t> d_keys(keys, keys + num);
-	cub::DoubleBuffer<int> d_values(values, values + num);
-
-	size_t tempSize;
-	cub::DeviceRadixSort::SortPairs(nullptr, tempSize, d_keys, d_values, int(num), 0, numBits);
-
-	mDeviceData->tempBuffer.resize(tempSize);
-
-//	cub::DeviceRadixSort::SortPairs(mDeviceData->tempBuffer, tempSize, d_keys, d_values, num, 0, numBits);
-	if (d_keys.Current() != keys)
-		cudaCheck(cudaMemcpy(keys, d_keys.Current(), sizeof(uint64_t) * num, cudaMemcpyDeviceToDevice));
-	if (d_values.Current() != values)
-		cudaCheck(cudaMemcpy(values, d_values.Current(), sizeof(int) * num, cudaMemcpyDeviceToDevice));
+	thrust::device_ptr<uint64_t> d_keys(keys);
+	thrust::device_ptr<int> d_values(values);
+	
+	thrust::sort_by_key(d_keys, d_keys + num, d_values);
 }
 
 

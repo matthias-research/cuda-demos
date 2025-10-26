@@ -1,7 +1,7 @@
 #include "Vec.h"
 #include "Geometry.h"
 #include "CudaUtils.h"
-#include "BVH.h"
+// Temporarily disabled: #include "BVH.h"
 
 struct RigidBodyParams
 {
@@ -62,7 +62,7 @@ struct RigidBodyDeviceData
         contacts.free();
         bodyLowers.free();
         bodyUppers.free();
-        bvh.free();
+        // Temporarily disabled: bvh.free();
         clear();
     }
 
@@ -101,7 +101,7 @@ struct RigidBodyDeviceData
     DeviceBuffer<RigidBodyContact> contacts;
 
     // acceleration structures
-    BVH bvh;
+    // Temporarily disabled: BVH bvh;
     DeviceBuffer<Vec4> bodyLowers;
     DeviceBuffer<Vec4> bodyUppers;
 };
@@ -272,6 +272,8 @@ __device__ void device_createPairContactPoints(RigidBodyDeviceData data, int bod
 
 __global__ void device_createContactPoints(RigidBodyDeviceData data)
 {
+    // Temporarily disabled - requires BVH
+    /*
     int bodyNr0 = threadIdx.x + blockIdx.x * blockDim.x;
 
     if (bodyNr0 >= data.numBodies)
@@ -312,4 +314,5 @@ __global__ void device_createContactPoints(RigidBodyDeviceData data)
             }
         }
     }
+    */
 }
