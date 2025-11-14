@@ -13,8 +13,19 @@ Interactive 3D graphics demos with real-time UI controls. Includes a rotating cu
 
 ### 1. Install vcpkg and Libraries
 
+**Important:** vcpkg must be installed at the same level as the `cuda-demos` folder.
+
+```
+parent-folder/
+  cuda-demos/          <- This project
+  vcpkg/              <- vcpkg installation (same level)
+```
+
 ```powershell
-# Clone vcpkg
+# Navigate to the parent directory of cuda-demos
+cd ..
+
+# Clone vcpkg at the same level as cuda-demos
 git clone https://github.com/Microsoft/vcpkg.git
 cd vcpkg
 .\bootstrap-vcpkg.bat
@@ -22,17 +33,11 @@ cd vcpkg
 # Install dependencies (static libraries)
 .\vcpkg install freeglut:x64-windows-static glew:x64-windows-static imgui[opengl3-binding,glut-binding]:x64-windows-static
 
-# Integrate with Visual Studio
-.\vcpkg integrate install
+# Note: vcpkg integration is disabled for this project to avoid path conflicts.
+# The project uses explicit relative paths to vcpkg libraries.
 ```
 
-### 2. Update vcpkg Path (if needed)
-
-If your vcpkg is not in `C:\Users\matth\GIT\vcpkg`, edit `CudaDemos.vcxproj`:
-- Search for `C:\Users\matth\GIT\vcpkg\installed\x64-windows-static`
-- Replace with your vcpkg path
-
-### 3. Build and Run
+### 2. Build and Run
 
 1. Open `CudaDemos.sln` in Visual Studio
 2. Set platform to **x64**
@@ -83,6 +88,8 @@ Error: CUDA 12.2.props not found
 ```
 **Fix:** Edit `CudaDemos.vcxproj`, search for `CUDA 12.2` and replace with your version (e.g., `CUDA 11.8`)
 
+**Note:** The project uses `$(CUDA_PATH_V12_2)` instead of `$(CUDA_PATH)` to avoid conflicts when multiple CUDA versions are installed. If you're using a different version, replace all instances of `CUDA_PATH_V12_2` with your version (e.g., `CUDA_PATH_V11_8` or `CUDA_PATH_V12_8`)
+
 ### Build Tools Not Found
 ```
 Error: The build tools for v142 cannot be found
@@ -95,8 +102,8 @@ Error: cannot open file 'imgui.lib' / 'glew32.lib' / 'freeglut.lib'
 ```
 **Fix:** 
 1. Ensure you installed static versions: `.\vcpkg install freeglut:x64-windows-static glew:x64-windows-static imgui[opengl3-binding,glut-binding]:x64-windows-static`
-2. Run `.\vcpkg integrate install`
-3. Verify vcpkg path in `CudaDemos.vcxproj` matches your installation
+2. Verify vcpkg is installed at the same level as the cuda-demos folder (see setup instructions)
+3. Check that the relative path `../vcpkg/installed/x64-windows-static/lib` is correct
 
 ### Runtime: GPU Not Found
 ```
