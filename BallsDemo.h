@@ -4,6 +4,8 @@
 #include "Camera.h"
 #include "Vec.h"
 #include <GL/glew.h>
+#include <cuda_runtime.h>
+#include <cuda_gl_interop.h>
 #include <vector>
 
 struct Ball {
@@ -15,22 +17,34 @@ struct Ball {
     float radius;   // Size
 };
 
+// CUDA physics functions (implemented in BallsDemo.cu)
+extern "C" void initCudaPhysics(int numBalls, float roomSize, GLuint vbo, cudaGraphicsResource** vboResource);
+extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float bounce, float roomSize, cudaGraphicsResource* vboResource);
+extern "C" void cleanupCudaPhysics(cudaGraphicsResource* vboResource);
+
 class BallsDemo : public Demo {
 private:
-    std::vector<Ball> balls;
-    int numBalls = 50;
+    int numBalls = 1000;  // Start with more balls to showcase GPU power
     float gravity = 9.8f;
     float bounce = 0.85f;  // Coefficient of restitution
     float friction = 0.99f;
     
     // Simulation bounds
-    float roomSize = 5.0f;
+    float roomSize = 20.0f;  // Double size room for more balls
     
     // OpenGL resources
     GLuint vao, vbo;
     GLuint sphereShader;
     GLuint fbo, renderTexture;
     int fbWidth, fbHeight;
+    
+    // CUDA resources
+    cudaGraphicsResource* cudaVboResource = nullptr;
+    bool useCuda = true;
+    
+    // Performance tracking
+    float lastUpdateTime = 0.0f;
+    float fps = 0.0f;
     
     // Camera (reference to main camera)
     Camera* camera = nullptr;
@@ -41,7 +55,6 @@ private:
     float lightPosZ = 5.0f;
     
     void initBalls();
-    void updatePhysics(float deltaTime);
     void initGL();
     void initShaders();
     void initFramebuffer(int width, int height);

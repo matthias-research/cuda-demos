@@ -136,51 +136,21 @@ static GLuint compileShader(GLenum type, const char* source) {
 
 BallsDemo::BallsDemo() : vao(0), vbo(0), sphereShader(0), fbo(0), renderTexture(0),
                          fbWidth(0), fbHeight(0) {
-    // Seed random number generator
-    srand(static_cast<unsigned int>(time(nullptr)));
-    
-    initBalls();
     initGL();
+    initBalls();
 }
 
 BallsDemo::~BallsDemo() {
+    if (cudaVboResource) {
+        cleanupCudaPhysics(cudaVboResource);
+    }
     cleanupGL();
 }
 
 void BallsDemo::initBalls() {
-    balls.clear();
-    balls.reserve(numBalls);
-    
-    for (int i = 0; i < numBalls; i++) {
-        Ball ball;
-        
-        // Random position in 3D room
-        ball.pos.x = -roomSize * 0.4f + (rand() % 1000) / 1000.0f * roomSize * 0.8f;
-        ball.pos.y = 1.0f + (rand() % 1000) / 1000.0f * roomSize * 0.5f;
-        ball.pos.z = -roomSize * 0.4f + (rand() % 1000) / 1000.0f * roomSize * 0.8f;
-        
-        // Random velocity
-        ball.vel.x = -2.0f + (rand() % 1000) / 1000.0f * 4.0f;
-        ball.vel.y = -2.0f + (rand() % 1000) / 1000.0f * 4.0f;
-        ball.vel.z = -2.0f + (rand() % 1000) / 1000.0f * 4.0f;
-        
-        // Initialize quaternion to identity (no rotation)
-        ball.quat = Quat(Identity);
-        
-        // Random angular velocity
-        ball.angVel.x = -3.0f + (rand() % 1000) / 1000.0f * 6.0f;
-        ball.angVel.y = -3.0f + (rand() % 1000) / 1000.0f * 6.0f;
-        ball.angVel.z = -3.0f + (rand() % 1000) / 1000.0f * 6.0f;
-        
-        // Random color (vibrant colors)
-        ball.color.x = 0.3f + (rand() % 70) / 100.0f;
-        ball.color.y = 0.3f + (rand() % 70) / 100.0f;
-        ball.color.z = 0.3f + (rand() % 70) / 100.0f;
-        
-        // Random size (4x larger than before)
-        ball.radius = (0.1f + (rand() % 100) / 1000.0f * 0.3f) * 4.0f;
-        
-        balls.push_back(ball);
+    // Initialize CUDA physics with the VBO
+    if (useCuda && vbo != 0) {
+        initCudaPhysics(numBalls, roomSize, vbo, &cudaVboResource);
     }
 }
 
@@ -190,6 +160,9 @@ void BallsDemo::initGL() {
     
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    
+    // Allocate VBO (will be filled by CUDA)
+    glBufferData(GL_ARRAY_BUFFER, numBalls * 14 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
     
     // Position attribute (location 0)
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)0);
@@ -278,108 +251,17 @@ void BallsDemo::cleanupGL() {
     if (renderTexture) glDeleteTextures(1, &renderTexture);
 }
 
-void BallsDemo::updatePhysics(float deltaTime) {
-    float halfRoom = roomSize * 0.5f;
-    
-    for (auto& ball : balls) {
-        // Apply gravity
-        ball.vel.y -= gravity * deltaTime;
-        
-        // Update position
-        ball.pos += ball.vel * deltaTime;
-        
-        // Update orientation using angular velocity - use the built-in method
-        ball.quat = ball.quat.rotateLinear(ball.quat, ball.angVel * deltaTime);
-        
-        // Apply friction
-        ball.vel *= friction;
-        ball.angVel *= friction;
-        
-        // Bounce off walls (X axis)
-        if (ball.pos.x - ball.radius < -halfRoom) {
-            ball.pos.x = -halfRoom + ball.radius;
-            ball.vel.x = -ball.vel.x * bounce;
-            // Collision adds spin (cross product)
-            ball.angVel += Vec3(0, ball.vel.z, -ball.vel.y) * 0.5f;
-        }
-        if (ball.pos.x + ball.radius > halfRoom) {
-            ball.pos.x = halfRoom - ball.radius;
-            ball.vel.x = -ball.vel.x * bounce;
-            ball.angVel += Vec3(0, -ball.vel.z, ball.vel.y) * 0.5f;
-        }
-        
-        // Bounce off floor and ceiling (Y axis)
-        if (ball.pos.y - ball.radius < 0) {
-            ball.pos.y = ball.radius;
-            ball.vel.y = -ball.vel.y * bounce;
-            // Floor collision adds spin
-            ball.angVel += Vec3(ball.vel.z, 0, -ball.vel.x) * 0.5f;
-        }
-        if (ball.pos.y + ball.radius > roomSize) {
-            ball.pos.y = roomSize - ball.radius;
-            ball.vel.y = -ball.vel.y * bounce;
-            ball.angVel += Vec3(-ball.vel.z, 0, ball.vel.x) * 0.5f;
-        }
-        
-        // Bounce off front/back walls (Z axis)
-        if (ball.pos.z - ball.radius < -halfRoom) {
-            ball.pos.z = -halfRoom + ball.radius;
-            ball.vel.z = -ball.vel.z * bounce;
-            ball.angVel += Vec3(-ball.vel.y, ball.vel.x, 0) * 0.5f;
-        }
-        if (ball.pos.z + ball.radius > halfRoom) {
-            ball.pos.z = halfRoom - ball.radius;
-            ball.vel.z = -ball.vel.z * bounce;
-            ball.angVel += Vec3(ball.vel.y, -ball.vel.x, 0) * 0.5f;
-        }
-    }
-    
-    // Ball-to-ball collision detection
-    for (size_t i = 0; i < balls.size(); i++) {
-        for (size_t j = i + 1; j < balls.size(); j++) {
-            Ball& b1 = balls[i];
-            Ball& b2 = balls[j];
-            
-            Vec3 delta = b2.pos - b1.pos;
-            float dist = delta.magnitude();
-            float minDist = b1.radius + b2.radius;
-            
-            if (dist < minDist && dist > 0.001f) {
-                // Normalize to get collision normal
-                Vec3 normal = delta / dist;
-                
-                // Separate balls
-                float overlap = minDist - dist;
-                b1.pos -= normal * (overlap * 0.5f);
-                b2.pos += normal * (overlap * 0.5f);
-                
-                // Calculate relative velocity
-                Vec3 relVel = b2.vel - b1.vel;
-                
-                // Velocity along collision normal
-                float dvn = relVel.dot(normal);
-                
-                // Only resolve if balls are moving towards each other
-                if (dvn < 0) {
-                    // Elastic collision (simplified, assuming equal mass)
-                    float impulse = dvn * bounce;
-                    Vec3 impulseVec = normal * impulse;
-                    b1.vel += impulseVec;
-                    b2.vel -= impulseVec;
-                    
-                    // Add spin from collision (torque = r × F)
-                    float spinFactor = 0.3f;
-                    Vec3 tangent = relVel - normal * dvn;
-                    b1.angVel += tangent.cross(normal) * spinFactor;
-                    b2.angVel -= tangent.cross(normal) * spinFactor;
-                }
-            }
-        }
-    }
-}
-
 void BallsDemo::update(float deltaTime) {
-    updatePhysics(deltaTime);
+    // Track FPS
+    if (lastUpdateTime > 0.0f) {
+        fps = 1.0f / deltaTime;
+    }
+    lastUpdateTime = deltaTime;
+    
+    // Update physics on GPU
+    if (useCuda && cudaVboResource) {
+        updateCudaPhysics(deltaTime, Vec3(0, -gravity, 0), friction, bounce, roomSize, cudaVboResource);
+    }
 }
 
 bool BallsDemo::raycast(const Vec3& orig, const Vec3& dir, float& t) {
@@ -413,7 +295,7 @@ void BallsDemo::render(uchar4* d_out, int width, int height) {
     
     glUseProgram(sphereShader);
     
-    // Set up matrices (same as BoxesDemo)
+    // Set up matrices
     float model[16], view[16], projection[16];
     for (int i = 0; i < 16; i++) model[i] = 0.0f;
     model[0] = model[5] = model[10] = model[15] = 1.0f;
@@ -469,35 +351,11 @@ void BallsDemo::render(uchar4* d_out, int width, int height) {
     glUniform3f(lightPosLoc, lightPosX, lightPosY, lightPosZ);
     glUniform1f(pointScaleLoc, height * projection[5]);
     
-    // Update VBO with ball data
-    std::vector<float> vertexData;
-    vertexData.reserve(balls.size() * 14);
-    for (const auto& ball : balls) {
-        vertexData.push_back(ball.pos.x);
-        vertexData.push_back(ball.pos.y);
-        vertexData.push_back(ball.pos.z);
-        vertexData.push_back(ball.radius);
-        vertexData.push_back(ball.color.x);
-        vertexData.push_back(ball.color.y);
-        vertexData.push_back(ball.color.z);
-        vertexData.push_back(ball.quat.w);
-        vertexData.push_back(ball.quat.x);
-        vertexData.push_back(ball.quat.y);
-        vertexData.push_back(ball.quat.z);
-        // Pad to keep alignment (angular velocity not needed in shader)
-        vertexData.push_back(0.0f);
-        vertexData.push_back(0.0f);
-        vertexData.push_back(0.0f);
-    }
-    
+    // Draw all balls as points (VBO is already filled by CUDA)
     glBindVertexArray(vao);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, vertexData.size() * sizeof(float), vertexData.data(), GL_DYNAMIC_DRAW);
-    
-    // Draw all balls as points
-    glDrawArrays(GL_POINTS, 0, balls.size());
-    
+    glDrawArrays(GL_POINTS, 0, numBalls);
     glBindVertexArray(0);
+    
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_POINT_SPRITE);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -516,6 +374,15 @@ void BallsDemo::render(uchar4* d_out, int width, int height) {
 }
 
 void BallsDemo::renderUI() {
+    ImGui::Text("=== GPU-Accelerated Physics Demo ===");
+    ImGui::Separator();
+    
+    ImGui::Text("Performance:");
+    ImGui::Text("  FPS: %.1f", fps);
+    ImGui::Text("  Frame Time: %.2f ms", lastUpdateTime * 1000.0f);
+    ImGui::Text("  Ball Count: %d", numBalls);
+    
+    ImGui::Separator();
     ImGui::Text("Camera Controls:");
     ImGui::Text("  WASD: Move, Q/E: Up/Down");
     ImGui::Text("  Left Mouse: Orbit");
@@ -524,20 +391,17 @@ void BallsDemo::renderUI() {
     ImGui::Text("  Wheel: Zoom");
     
     ImGui::Separator();
-    ImGui::Text("Physics Simulation:");
-    ImGui::Text("Number of balls: %d", static_cast<int>(balls.size()));
+    ImGui::Text("GPU Simulation Parameters:");
     
-    ImGui::Separator();
-    ImGui::Text("Parameters:");
-    
-    if (ImGui::SliderInt("Ball Count##balls", &numBalls, 1, 200)) {
-        initBalls();
+    bool ballCountChanged = false;
+    if (ImGui::SliderInt("Ball Count##balls", &numBalls, 100, 10000)) {
+        ballCountChanged = true;
     }
     
     ImGui::SliderFloat("Gravity##balls", &gravity, 0.0f, 20.0f, "%.1f");
     ImGui::SliderFloat("Bounce##balls", &bounce, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat("Friction##balls", &friction, 0.8f, 1.0f, "%.3f");
-    ImGui::SliderFloat("Room Size##balls", &roomSize, 5.0f, 20.0f, "%.1f");
+    ImGui::SliderFloat("Room Size##balls", &roomSize, 5.0f, 30.0f, "%.1f");
     
     ImGui::Separator();
     ImGui::Text("Lighting:");
@@ -548,22 +412,51 @@ void BallsDemo::renderUI() {
     ImGui::Separator();
     if (ImGui::Button("Reset Simulation##balls", ImVec2(200, 0))) {
         reset();
+        ballCountChanged = true;
     }
     
     if (ImGui::Button("Reset View##balls", ImVec2(200, 0))) {
         if (camera) camera->resetView();
     }
+    
+    // Handle ball count change
+    if (ballCountChanged) {
+        // Clean up old CUDA resources
+        if (cudaVboResource) {
+            cleanupCudaPhysics(cudaVboResource);
+            cudaVboResource = nullptr;
+        }
+        
+        // Reallocate VBO
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, numBalls * 14 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        
+        // Reinitialize CUDA
+        initBalls();
+    }
+    
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "Using CUDA GPU Acceleration!");
+    ImGui::Text("Spatial hash grid for O(n) collisions");
 }
 
 void BallsDemo::reset() {
     gravity = 9.8f;
     bounce = 0.85f;
     friction = 0.99f;
-    roomSize = 5.0f;
+    roomSize = 20.0f;
     lightPosX = 5.0f;
     lightPosY = 8.0f;
     lightPosZ = 5.0f;
+    
+    // Reinitialize CUDA physics
+    if (cudaVboResource) {
+        cleanupCudaPhysics(cudaVboResource);
+        cudaVboResource = nullptr;
+    }
     initBalls();
+    
     if (camera) camera->resetView();
 }
 
