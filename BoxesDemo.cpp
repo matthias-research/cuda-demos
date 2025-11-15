@@ -111,7 +111,7 @@ float cubeVertices[] = {
 };
 
 // Helper function to create and compile shader
-GLuint compileShader(GLenum type, const char* source) {
+static GLuint compileShader(GLenum type, const char* source) {
     GLuint shader = glCreateShader(type);
     glShaderSource(shader, 1, &source, nullptr);
     glCompileShader(shader);
