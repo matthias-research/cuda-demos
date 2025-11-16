@@ -3,6 +3,7 @@
 #include "Demo.h"
 #include "Camera.h"
 #include "Vec.h"
+#include "BVH.h"
 #include <GL/glew.h>
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
@@ -18,8 +19,8 @@ struct Ball {
 };
 
 // CUDA physics functions (implemented in BallsDemo.cu)
-extern "C" void initCudaPhysics(int numBalls, float roomSize, GLuint vbo, cudaGraphicsResource** vboResource);
-extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float bounce, float roomSize, cudaGraphicsResource* vboResource);
+extern "C" void initCudaPhysics(int numBalls, float roomSize, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder);
+extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float bounce, float roomSize, cudaGraphicsResource* vboResource, bool useBVH);
 extern "C" void cleanupCudaPhysics(cudaGraphicsResource* vboResource);
 
 class BallsDemo : public Demo {
@@ -41,6 +42,8 @@ private:
     // CUDA resources
     cudaGraphicsResource* cudaVboResource = nullptr;
     bool useCuda = true;
+    bool useBVH = false;  // Toggle between BVH and hash grid collision
+    BVHBuilder* bvhBuilder = nullptr;
     
     // Performance tracking
     float lastUpdateTime = 0.0f;

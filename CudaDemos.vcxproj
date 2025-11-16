@@ -112,14 +112,14 @@
     <ClInclude Include="Camera.h" />
     <ClInclude Include="CudaUtils.h" />
     <ClInclude Include="Geometry.h" />
-    <!-- Temporarily disabled: <ClInclude Include="BVH.h" /> -->
+    <ClInclude Include="BVH.h" />
     <ClInclude Include="RigidBodyKernels.h" />
     <ClInclude Include="BoxesDemo.h" />
     <ClInclude Include="MandelbrotDemo.h" />
     <ClInclude Include="BallsDemo.h" />
   </ItemGroup>
   <ItemGroup>
-    <!-- Temporarily disabled: <CudaCompile Include="BVH.cu" /> -->
+    <CudaCompile Include="BVH.cu" />
     <CudaCompile Include="RigidBody.cu" />
     <CudaCompile Include="MandelbrotDemo.cu" />
     <CudaCompile Include="BallsDemo.cu" />

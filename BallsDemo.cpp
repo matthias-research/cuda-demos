@@ -136,6 +136,7 @@ static GLuint compileShader(GLenum type, const char* source) {
 
 BallsDemo::BallsDemo() : vao(0), vbo(0), sphereShader(0), fbo(0), renderTexture(0),
                          fbWidth(0), fbHeight(0) {
+    bvhBuilder = new BVHBuilder();
     initGL();
     initBalls();
 }
@@ -144,13 +145,16 @@ BallsDemo::~BallsDemo() {
     if (cudaVboResource) {
         cleanupCudaPhysics(cudaVboResource);
     }
+    if (bvhBuilder) {
+        delete bvhBuilder;
+    }
     cleanupGL();
 }
 
 void BallsDemo::initBalls() {
     // Initialize CUDA physics with the VBO
     if (useCuda && vbo != 0) {
-        initCudaPhysics(numBalls, roomSize, vbo, &cudaVboResource);
+        initCudaPhysics(numBalls, roomSize, vbo, &cudaVboResource, bvhBuilder);
     }
 }
 
@@ -260,7 +264,7 @@ void BallsDemo::update(float deltaTime) {
     
     // Update physics on GPU
     if (useCuda && cudaVboResource) {
-        updateCudaPhysics(deltaTime, Vec3(0, -gravity, 0), friction, bounce, roomSize, cudaVboResource);
+        updateCudaPhysics(deltaTime, Vec3(0, -gravity, 0), friction, bounce, roomSize, cudaVboResource, useBVH);
     }
 }
 
@@ -404,6 +408,17 @@ void BallsDemo::renderUI() {
     ImGui::SliderFloat("Room Size##balls", &roomSize, 5.0f, 30.0f, "%.1f");
     
     ImGui::Separator();
+    ImGui::Text("Collision Detection Method:");
+    if (ImGui::RadioButton("Hash Grid (Fast)##balls", !useBVH)) {
+        useBVH = false;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("BVH (Compare)##balls", useBVH)) {
+        useBVH = true;
+    }
+    ImGui::Text("  %s", useBVH ? "Using BVH tree traversal" : "Using spatial hash grid");
+    
+    ImGui::Separator();
     ImGui::Text("Lighting:");
     ImGui::SliderFloat("Light X##balls", &lightPosX, -10.0f, 10.0f);
     ImGui::SliderFloat("Light Y##balls", &lightPosY, 0.0f, 15.0f);
@@ -438,7 +453,11 @@ void BallsDemo::renderUI() {
     
     ImGui::Separator();
     ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "Using CUDA GPU Acceleration!");
-    ImGui::Text("Spatial hash grid for O(n) collisions");
+    if (useBVH) {
+        ImGui::Text("BVH tree for hierarchical collision detection");
+    } else {
+        ImGui::Text("Spatial hash grid for O(n) collisions");
+    }
 }
 
 void BallsDemo::reset() {
