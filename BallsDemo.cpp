@@ -71,6 +71,7 @@ void main()
     
     // Calculate sphere normal from point coordinate
     vec2 coord = gl_PointCoord * 2.0 - 1.0;
+    coord.y = -coord.y;  // Flip Y axis (gl_PointCoord Y is inverted)
     float r2 = dot(coord, coord);
     
     // Discard fragments outside sphere

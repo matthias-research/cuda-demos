@@ -28,7 +28,7 @@ private:
     int numBalls = 1000;  // Start with more balls to showcase GPU power
     float gravity = 9.8f;
     float bounce = 0.85f;  // Coefficient of restitution
-    float friction = 0.99f;
+    float friction = 1.0f; // no friction
     
     // Simulation bounds
     float roomSize = 20.0f;  // Double size room for more balls
