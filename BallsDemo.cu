@@ -23,10 +23,11 @@ struct BallsDeviceData {
         hashIds.free();
         hashCellFirst.free();
         hashCellLast.free();
-        sortedPos.free();
-        sortedPrevPos.free();
         ballBoundsLowers.free();
         ballBoundsUppers.free();
+        posCorr.free();
+        velCorr.free();
+        angVelCorr.free();
         numBalls = 0;
     }
     
@@ -41,10 +42,11 @@ struct BallsDeviceData {
         s += hashIds.allocationSize();
         s += hashCellFirst.allocationSize();
         s += hashCellLast.allocationSize();
-        s += sortedPos.allocationSize();
-        s += sortedPrevPos.allocationSize();
         s += ballBoundsLowers.allocationSize();
         s += ballBoundsUppers.allocationSize();
+        s += posCorr.allocationSize();
+        s += velCorr.allocationSize();
+        s += angVelCorr.allocationSize();
         return s;
     }
     
@@ -63,13 +65,16 @@ struct BallsDeviceData {
     DeviceBuffer<int> hashIds;        // Ball index (gets sorted)
     DeviceBuffer<int> hashCellFirst;  // First ball in each cell
     DeviceBuffer<int> hashCellLast;   // Last ball in each cell
-    DeviceBuffer<Vec3> sortedPos;     // Positions in sorted order
-    DeviceBuffer<Vec3> sortedPrevPos; // Previous positions in sorted order
     
     // BVH collision detection
     DeviceBuffer<Vec4> ballBoundsLowers;  // Lower bounds for BVH
     DeviceBuffer<Vec4> ballBoundsUppers;  // Upper bounds for BVH
     BVH bvh;                              // BVH structure
+    
+    // Collision correction buffers (for symmetric resolution)
+    DeviceBuffer<Vec3> posCorr;       // Position corrections
+    DeviceBuffer<Vec3> velCorr;       // Velocity corrections
+    DeviceBuffer<Vec3> angVelCorr;    // Angular velocity corrections
     
     // VBO data (mapped from OpenGL)
     float* vboData = nullptr;      // Interleaved: pos(3), radius(1), color(3), quat(4), pad(3) = 14 floats
@@ -98,17 +103,17 @@ __global__ void kernel_integrate(BallsDeviceData data, float dt, Vec3 gravity, f
     Vec3 pos(ballData[0], ballData[1], ballData[2]);
     
     // Apply gravity
-    data.vel.buffer[idx] += gravity * dt;
+    data.vel[idx] += gravity * dt;
     
     // Apply friction
-    data.vel.buffer[idx] *= friction;
-    data.angVel.buffer[idx] *= friction;
+    data.vel[idx] *= friction;
+    data.angVel[idx] *= friction;
     
     // Save previous position
-    data.prevPos.buffer[idx] = pos;
+    data.prevPos[idx] = pos;
     
     // Update position
-    pos += data.vel.buffer[idx] * dt;
+    pos += data.vel[idx] * dt;
     
     // Write position back to VBO
     ballData[0] = pos.x;
@@ -131,8 +136,8 @@ __global__ void kernel_computeBallBounds(BallsDeviceData data) {
     Vec3 upper = pos + Vec3(radius, radius, radius);
     
     // Store as Vec4 (BVH builder expects Vec4)
-    data.ballBoundsLowers.buffer[idx] = Vec4(lower.x, lower.y, lower.z, 0.0f);
-    data.ballBoundsUppers.buffer[idx] = Vec4(upper.x, upper.y, upper.z, 0.0f);
+    data.ballBoundsLowers[idx] = Vec4(lower.x, lower.y, lower.z, 0.0f);
+    data.ballBoundsUppers[idx] = Vec4(upper.x, upper.y, upper.z, 0.0f);
 }
 
 // Kernel 2: Fill hash values
@@ -147,45 +152,109 @@ __global__ void kernel_fillHash(BallsDeviceData data) {
     // Compute hash
     int h = hashPosition(pos, data.gridSpacing, data.worldOrig);
     
-    data.hashVals.buffer[idx] = h;
-    data.hashIds.buffer[idx] = idx;
+    data.hashVals[idx] = h;
+    data.hashIds[idx] = idx;
 }
 
-// Kernel 3: Setup hash grid
+// Kernel 3: Setup hash grid cell boundaries
 __global__ void kernel_setupHash(BallsDeviceData data) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
     
-    unsigned int h = data.hashVals.buffer[idx];
+    unsigned int h = data.hashVals[idx];
     
     // Find cell boundaries
     if (idx == 0) {
-        data.hashCellFirst.buffer[h] = 0;
+        data.hashCellFirst[h] = 0;
     } else {
-        unsigned int prevH = data.hashVals.buffer[idx - 1];
+        unsigned int prevH = data.hashVals[idx - 1];
         if (h != prevH) {
-            data.hashCellFirst.buffer[h] = idx;
-            data.hashCellLast.buffer[prevH] = idx;
+            data.hashCellFirst[h] = idx;
+            data.hashCellLast[prevH] = idx;
         }
     }
     
     if (idx == data.numBalls - 1) {
-        data.hashCellLast.buffer[h] = data.numBalls;
+        data.hashCellLast[h] = data.numBalls;
     }
-    
-    // Copy positions to sorted arrays
-    int sortedId = data.hashIds.buffer[idx];
-    float* ballData = data.vboData + sortedId * 14;
-    data.sortedPos.buffer[idx] = Vec3(ballData[0], ballData[1], ballData[2]);
-    data.sortedPrevPos.buffer[idx] = data.prevPos.buffer[sortedId];
 }
 
-// Kernel 4: Ball-to-ball collision
+// Device function: Handle collision between two balls (symmetric resolution)
+// Only processes if idx < otherIdx to handle each pair once
+__device__ inline void handleBallCollision(
+    int idx,
+    int otherIdx,
+    const Vec3& pos,
+    float radius,
+    const Vec3& otherPos,
+    float otherRadius,
+    float bounce,
+    BallsDeviceData& data)
+{
+    // Only process each pair once (symmetric resolution)
+    if (idx >= otherIdx) return;
+    
+    // Check collision
+    Vec3 delta = otherPos - pos;
+    float dist = delta.magnitude();
+    float minDist = radius + otherRadius;
+    
+    if (dist < minDist && dist > 0.001f) {
+        // Collision detected
+        Vec3 normal = delta / dist;
+        
+        // Position correction: separate balls symmetrically
+        float overlap = minDist - dist;
+        Vec3 separation = normal * (overlap * 0.5f);
+        
+        atomicAdd(&data.posCorr[idx].x, -separation.x);
+        atomicAdd(&data.posCorr[idx].y, -separation.y);
+        atomicAdd(&data.posCorr[idx].z, -separation.z);
+        
+        atomicAdd(&data.posCorr[otherIdx].x, separation.x);
+        atomicAdd(&data.posCorr[otherIdx].y, separation.y);
+        atomicAdd(&data.posCorr[otherIdx].z, separation.z);
+        
+        // Velocity correction: calculate relative velocity and impulse
+        Vec3 relVel = data.vel[otherIdx] - data.vel[idx];
+        float dvn = relVel.dot(normal);
+        
+        // Only resolve if balls are moving towards each other
+        if (dvn < 0) {
+            // Apply impulse (symmetric: equal and opposite)
+            float impulse = dvn * bounce;
+            Vec3 impulseVec = normal * impulse;
+            
+            atomicAdd(&data.velCorr[idx].x, impulseVec.x);
+            atomicAdd(&data.velCorr[idx].y, impulseVec.y);
+            atomicAdd(&data.velCorr[idx].z, impulseVec.z);
+            
+            atomicAdd(&data.velCorr[otherIdx].x, -impulseVec.x);
+            atomicAdd(&data.velCorr[otherIdx].y, -impulseVec.y);
+            atomicAdd(&data.velCorr[otherIdx].z, -impulseVec.z);
+            
+            // Angular velocity correction: add spin from collision
+            float spinFactor = 0.3f;
+            Vec3 tangent = relVel - normal * dvn;
+            Vec3 spin = tangent.cross(normal) * spinFactor;
+            
+            atomicAdd(&data.angVelCorr[idx].x, spin.x);
+            atomicAdd(&data.angVelCorr[idx].y, spin.y);
+            atomicAdd(&data.angVelCorr[idx].z, spin.z);
+            
+            atomicAdd(&data.angVelCorr[otherIdx].x, -spin.x);
+            atomicAdd(&data.angVelCorr[otherIdx].y, -spin.y);
+            atomicAdd(&data.angVelCorr[otherIdx].z, -spin.z);
+        }
+    }
+}
+
+// Kernel 4: Ball-to-ball collision (hash grid)
 __global__ void kernel_ballCollision(BallsDeviceData data, float bounce) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
     
-    // Get ball data
+    // Get ball data (read from VBO)
     float* ballData = data.vboData + idx * 14;
     Vec3 pos(ballData[0], ballData[1], ballData[2]);
     float radius = ballData[3];
@@ -205,61 +274,24 @@ __global__ void kernel_ballCollision(BallsDeviceData data, float bounce) {
                 
                 unsigned int h = abs((cellX * 92837111) ^ (cellY * 689287499) ^ (cellZ * 283923481)) % HASH_SIZE;
                 
-                int first = data.hashCellFirst.buffer[h];
-                int last = data.hashCellLast.buffer[h];
+                int first = data.hashCellFirst[h];
+                int last = data.hashCellLast[h];
                 
                 // Check all balls in this cell
                 for (int i = first; i < last; i++) {
-                    int otherIdx = data.hashIds.buffer[i];
-                    if (otherIdx == idx) continue;
+                    int otherIdx = data.hashIds[i];
                     
-                    // Get other ball data
+                    // Get other ball data (read from VBO using index)
                     float* otherData = data.vboData + otherIdx * 14;
                     Vec3 otherPos(otherData[0], otherData[1], otherData[2]);
                     float otherRadius = otherData[3];
                     
-                    // Check collision
-                    Vec3 delta = otherPos - pos;
-                    float dist = delta.magnitude();
-                    float minDist = radius + otherRadius;
-                    
-                    if (dist < minDist && dist > 0.001f) {
-                        // Collision detected
-                        Vec3 normal = delta / dist;
-                        
-                        // Separate balls (position correction)
-                        float overlap = minDist - dist;
-                        Vec3 correction = normal * (overlap * 0.5f);
-                        
-                        // Apply correction to position
-                        pos -= correction;
-                        
-                        // Calculate relative velocity
-                        Vec3 relVel = data.vel.buffer[otherIdx] - data.vel.buffer[idx];
-                        float dvn = relVel.dot(normal);
-                        
-                        // Only resolve if balls are moving towards each other
-                        if (dvn < 0) {
-                            // Apply impulse
-                            float impulse = dvn * bounce;
-                            Vec3 impulseVec = normal * impulse;
-                            data.vel.buffer[idx] += impulseVec;
-                            
-                            // Add spin from collision
-                            float spinFactor = 0.3f;
-                            Vec3 tangent = relVel - normal * dvn;
-                            data.angVel.buffer[idx] += tangent.cross(normal) * spinFactor;
-                        }
-                    }
+                    // Handle collision using symmetric resolution
+                    handleBallCollision(idx, otherIdx, pos, radius, otherPos, otherRadius, bounce, data);
                 }
             }
         }
     }
-    
-    // Write corrected position back
-    ballData[0] = pos.x;
-    ballData[1] = pos.y;
-    ballData[2] = pos.z;
 }
 
 // Kernel 5: Wall collision
@@ -276,37 +308,37 @@ __global__ void kernel_wallCollision(BallsDeviceData data, float roomSize, float
     // X axis walls
     if (pos.x - radius < -halfRoom) {
         pos.x = -halfRoom + radius;
-        data.vel.buffer[idx].x = -data.vel.buffer[idx].x * bounce;
-        data.angVel.buffer[idx] += Vec3(0, data.vel.buffer[idx].z, -data.vel.buffer[idx].y) * 0.5f;
+        data.vel[idx].x = -data.vel[idx].x * bounce;
+        data.angVel[idx] += Vec3(0, data.vel[idx].z, -data.vel[idx].y) * 0.5f;
     }
     if (pos.x + radius > halfRoom) {
         pos.x = halfRoom - radius;
-        data.vel.buffer[idx].x = -data.vel.buffer[idx].x * bounce;
-        data.angVel.buffer[idx] += Vec3(0, -data.vel.buffer[idx].z, data.vel.buffer[idx].y) * 0.5f;
+        data.vel[idx].x = -data.vel[idx].x * bounce;
+        data.angVel[idx] += Vec3(0, -data.vel[idx].z, data.vel[idx].y) * 0.5f;
     }
     
     // Y axis (floor and ceiling)
     if (pos.y - radius < 0) {
         pos.y = radius;
-        data.vel.buffer[idx].y = -data.vel.buffer[idx].y * bounce;
-        data.angVel.buffer[idx] += Vec3(data.vel.buffer[idx].z, 0, -data.vel.buffer[idx].x) * 0.5f;
+        data.vel[idx].y = -data.vel[idx].y * bounce;
+        data.angVel[idx] += Vec3(data.vel[idx].z, 0, -data.vel[idx].x) * 0.5f;
     }
     if (pos.y + radius > roomSize) {
         pos.y = roomSize - radius;
-        data.vel.buffer[idx].y = -data.vel.buffer[idx].y * bounce;
-        data.angVel.buffer[idx] += Vec3(-data.vel.buffer[idx].z, 0, data.vel.buffer[idx].x) * 0.5f;
+        data.vel[idx].y = -data.vel[idx].y * bounce;
+        data.angVel[idx] += Vec3(-data.vel[idx].z, 0, data.vel[idx].x) * 0.5f;
     }
     
     // Z axis walls
     if (pos.z - radius < -halfRoom) {
         pos.z = -halfRoom + radius;
-        data.vel.buffer[idx].z = -data.vel.buffer[idx].z * bounce;
-        data.angVel.buffer[idx] += Vec3(-data.vel.buffer[idx].y, data.vel.buffer[idx].x, 0) * 0.5f;
+        data.vel[idx].z = -data.vel[idx].z * bounce;
+        data.angVel[idx] += Vec3(-data.vel[idx].y, data.vel[idx].x, 0) * 0.5f;
     }
     if (pos.z + radius > halfRoom) {
         pos.z = halfRoom - radius;
-        data.vel.buffer[idx].z = -data.vel.buffer[idx].z * bounce;
-        data.angVel.buffer[idx] += Vec3(data.vel.buffer[idx].y, -data.vel.buffer[idx].x, 0) * 0.5f;
+        data.vel[idx].z = -data.vel[idx].z * bounce;
+        data.angVel[idx] += Vec3(data.vel[idx].y, -data.vel[idx].x, 0) * 0.5f;
     }
     
     // Write back
@@ -320,7 +352,7 @@ __global__ void kernel_ballCollision_BVH(BallsDeviceData data, float bounce) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
     
-    // Get ball data
+    // Get ball data (read from VBO)
     float* ballData = data.vboData + idx * 14;
     Vec3 pos(ballData[0], ballData[1], ballData[2]);
     float radius = ballData[3];
@@ -355,46 +387,14 @@ __global__ void kernel_ballCollision_BVH(BallsDeviceData data, float bounce) {
             
             if (lower.b) {  // Leaf node
                 int otherIdx = leftIndex;
-                if (otherIdx == idx) continue;
                 
-                // Get other ball data
+                // Get other ball data (read from VBO using index)
                 float* otherData = data.vboData + otherIdx * 14;
                 Vec3 otherPos(otherData[0], otherData[1], otherData[2]);
                 float otherRadius = otherData[3];
                 
-                // Check collision
-                Vec3 delta = otherPos - pos;
-                float dist = delta.magnitude();
-                float minDist = radius + otherRadius;
-                
-                if (dist < minDist && dist > 0.001f) {
-                    // Collision detected
-                    Vec3 normal = delta / dist;
-                    
-                    // Separate balls (position correction)
-                    float overlap = minDist - dist;
-                    Vec3 correction = normal * (overlap * 0.5f);
-                    
-                    // Apply correction to position
-                    pos -= correction;
-                    
-                    // Calculate relative velocity
-                    Vec3 relVel = data.vel.buffer[otherIdx] - data.vel.buffer[idx];
-                    float dvn = relVel.dot(normal);
-                    
-                    // Only resolve if balls are moving towards each other
-                    if (dvn < 0) {
-                        // Apply impulse
-                        float impulse = dvn * bounce;
-                        Vec3 impulseVec = normal * impulse;
-                        data.vel.buffer[idx] += impulseVec;
-                        
-                        // Add spin from collision
-                        float spinFactor = 0.3f;
-                        Vec3 tangent = relVel - normal * dvn;
-                        data.angVel.buffer[idx] += tangent.cross(normal) * spinFactor;
-                    }
-                }
+                // Handle collision using symmetric resolution
+                handleBallCollision(idx, otherIdx, pos, radius, otherPos, otherRadius, bounce, data);
             } else {  // Internal node
                 // Push children onto stack
                 if (stackCount < 63) {  // Prevent stack overflow
@@ -404,11 +404,36 @@ __global__ void kernel_ballCollision_BVH(BallsDeviceData data, float bounce) {
             }
         }
     }
+}
+
+// Kernel: Apply collision corrections with relaxation
+__global__ void kernel_applyCorrections(BallsDeviceData data, float relaxation) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx >= data.numBalls) return;
     
-    // Write corrected position back
+    // Read from VBO
+    float* ballData = data.vboData + idx * 14;
+    Vec3 pos(ballData[0], ballData[1], ballData[2]);
+    
+    // Apply corrections with relaxation factor
+    pos += data.posCorr[idx] * relaxation;
+    data.vel[idx] += data.velCorr[idx] * relaxation;
+    data.angVel[idx] += data.angVelCorr[idx] * relaxation;
+    
+    // Write position back to VBO
     ballData[0] = pos.x;
     ballData[1] = pos.y;
     ballData[2] = pos.z;
+}
+
+// Kernel: Zero correction buffers
+__global__ void kernel_zeroCorrections(BallsDeviceData data) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx >= data.numBalls) return;
+    
+    data.posCorr[idx] = Vec3(0, 0, 0);
+    data.velCorr[idx] = Vec3(0, 0, 0);
+    data.angVelCorr[idx] = Vec3(0, 0, 0);
 }
 
 // Kernel 6: Integrate quaternions
@@ -422,7 +447,7 @@ __global__ void kernel_integrateQuaternions(BallsDeviceData data, float dt) {
     Quat quat(ballData[8], ballData[9], ballData[10], ballData[7]); // x, y, z, w
     
     // Integrate rotation
-    Vec3 omega = data.angVel.buffer[idx] * dt;
+    Vec3 omega = data.angVel[idx] * dt;
     quat = quat.rotateLinear(quat, omega);
     
     // Write back
@@ -475,17 +500,17 @@ __global__ void kernel_initBalls(BallsDeviceData data, float roomSize, unsigned 
     ballData[13] = 0.0f;
     
     // Random velocity
-    data.vel.buffer[idx].x = -2.0f + FRAND() * 4.0f;
-    data.vel.buffer[idx].y = -2.0f + FRAND() * 4.0f;
-    data.vel.buffer[idx].z = -2.0f + FRAND() * 4.0f;
+    data.vel[idx].x = -2.0f + FRAND() * 4.0f;
+    data.vel[idx].y = -2.0f + FRAND() * 4.0f;
+    data.vel[idx].z = -2.0f + FRAND() * 4.0f;
     
     // Random angular velocity
-    data.angVel.buffer[idx].x = -3.0f + FRAND() * 6.0f;
-    data.angVel.buffer[idx].y = -3.0f + FRAND() * 6.0f;
-    data.angVel.buffer[idx].z = -3.0f + FRAND() * 6.0f;
+    data.angVel[idx].x = -3.0f + FRAND() * 6.0f;
+    data.angVel[idx].y = -3.0f + FRAND() * 6.0f;
+    data.angVel[idx].z = -3.0f + FRAND() * 6.0f;
     
     // Store radius
-    data.radii.buffer[idx] = ballData[3];
+    data.radii[idx] = ballData[3];
     
     #undef FRAND
 }
@@ -514,12 +539,15 @@ extern "C" void initCudaPhysics(int numBalls, float roomSize, GLuint vbo, cudaGr
     g_deviceData.hashIds.resize(numBalls, false);
     g_deviceData.hashCellFirst.resize(HASH_SIZE, false);
     g_deviceData.hashCellLast.resize(HASH_SIZE, false);
-    g_deviceData.sortedPos.resize(numBalls, false);
-    g_deviceData.sortedPrevPos.resize(numBalls, false);
     
     // Allocate BVH bounds buffers
     g_deviceData.ballBoundsLowers.resize(numBalls, false);
     g_deviceData.ballBoundsUppers.resize(numBalls, false);
+    
+    // Allocate collision correction buffers
+    g_deviceData.posCorr.resize(numBalls, false);
+    g_deviceData.velCorr.resize(numBalls, false);
+    g_deviceData.angVelCorr.resize(numBalls, false);
     
     // Initialize memory
     g_deviceData.vel.setZero();
@@ -586,6 +614,9 @@ extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float 
     // Run physics pipeline
     kernel_integrate<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, dt, gravity, friction);
     
+    // Zero correction buffers before collision detection
+    kernel_zeroCorrections<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData);
+    
     if (useBVH) {
         // BVH-based collision detection
         
@@ -602,7 +633,7 @@ extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float 
                               0);
         }
         
-        // BVH-based collision
+        // BVH-based collision (accumulates corrections)
         kernel_ballCollision_BVH<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, bounce);
     } else {
         // Hash grid collision detection
@@ -619,8 +650,13 @@ extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float 
         
         kernel_setupHash<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData);
         
+        // Hash grid collision (accumulates corrections)
         kernel_ballCollision<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, bounce);
     }
+    
+    // Apply corrections with relaxation
+    const float relaxation = 0.3f;
+    kernel_applyCorrections<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, relaxation);
     
     kernel_wallCollision<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, roomSize, bounce);
     
