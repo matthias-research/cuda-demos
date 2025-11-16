@@ -1,4 +1,5 @@
 #include "BallsDemo.h"
+#include "CudaUtils.h"
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 #include <device_launch_parameters.h>
@@ -9,30 +10,60 @@
 
 // Hash grid parameters
 static const int HASH_SIZE = 370111;  // Prime number for better distribution
-static const int THREADS_PER_BLOCK = 256;
 
 // Device data structure - all simulation state on GPU
 struct BallsDeviceData {
-    int numBalls;
-    float gridSpacing;
-    float worldOrig;
+    void free()  // no destructor because cuda would call it in the kernels
+    {
+        vel.free();
+        angVel.free();
+        prevPos.free();
+        radii.free();
+        hashVals.free();
+        hashIds.free();
+        hashCellFirst.free();
+        hashCellLast.free();
+        sortedPos.free();
+        sortedPrevPos.free();
+        numBalls = 0;
+    }
+    
+    size_t allocationSize() const
+    {
+        size_t s = 0;
+        s += vel.allocationSize();
+        s += angVel.allocationSize();
+        s += prevPos.allocationSize();
+        s += radii.allocationSize();
+        s += hashVals.allocationSize();
+        s += hashIds.allocationSize();
+        s += hashCellFirst.allocationSize();
+        s += hashCellLast.allocationSize();
+        s += sortedPos.allocationSize();
+        s += sortedPrevPos.allocationSize();
+        return s;
+    }
+    
+    int numBalls = 0;
+    float gridSpacing = 0.0f;
+    float worldOrig = 0.0f;
     
     // Physics data
-    Vec3* vel;           // Velocities
-    Vec3* angVel;        // Angular velocities
-    Vec3* prevPos;       // Previous positions (for position-based dynamics)
-    float* radii;        // Radius per ball (for variable sizes)
+    DeviceBuffer<Vec3> vel;           // Velocities
+    DeviceBuffer<Vec3> angVel;        // Angular velocities
+    DeviceBuffer<Vec3> prevPos;       // Previous positions (for position-based dynamics)
+    DeviceBuffer<float> radii;        // Radius per ball (for variable sizes)
     
     // Hash grid
-    int* hashVals;       // Hash value per ball
-    int* hashIds;        // Ball index (gets sorted)
-    int* hashCellFirst;  // First ball in each cell
-    int* hashCellLast;   // Last ball in each cell
-    Vec3* sortedPos;     // Positions in sorted order
-    Vec3* sortedPrevPos; // Previous positions in sorted order
+    DeviceBuffer<int> hashVals;       // Hash value per ball
+    DeviceBuffer<int> hashIds;        // Ball index (gets sorted)
+    DeviceBuffer<int> hashCellFirst;  // First ball in each cell
+    DeviceBuffer<int> hashCellLast;   // Last ball in each cell
+    DeviceBuffer<Vec3> sortedPos;     // Positions in sorted order
+    DeviceBuffer<Vec3> sortedPrevPos; // Previous positions in sorted order
     
     // VBO data (mapped from OpenGL)
-    float* vboData;      // Interleaved: pos(3), radius(1), color(3), quat(4), pad(3) = 14 floats
+    float* vboData = nullptr;      // Interleaved: pos(3), radius(1), color(3), quat(4), pad(3) = 14 floats
 };
 
 // Global device data (stored on host, contains device pointers)
@@ -58,17 +89,17 @@ __global__ void kernel_integrate(BallsDeviceData data, float dt, Vec3 gravity, f
     Vec3 pos(ballData[0], ballData[1], ballData[2]);
     
     // Apply gravity
-    data.vel[idx] += gravity * dt;
+    data.vel.buffer[idx] += gravity * dt;
     
     // Apply friction
-    data.vel[idx] *= friction;
-    data.angVel[idx] *= friction;
+    data.vel.buffer[idx] *= friction;
+    data.angVel.buffer[idx] *= friction;
     
     // Save previous position
-    data.prevPos[idx] = pos;
+    data.prevPos.buffer[idx] = pos;
     
     // Update position
-    pos += data.vel[idx] * dt;
+    pos += data.vel.buffer[idx] * dt;
     
     // Write position back to VBO
     ballData[0] = pos.x;
@@ -88,8 +119,8 @@ __global__ void kernel_fillHash(BallsDeviceData data) {
     // Compute hash
     int h = hashPosition(pos, data.gridSpacing, data.worldOrig);
     
-    data.hashVals[idx] = h;
-    data.hashIds[idx] = idx;
+    data.hashVals.buffer[idx] = h;
+    data.hashIds.buffer[idx] = idx;
 }
 
 // Kernel 3: Setup hash grid
@@ -97,28 +128,28 @@ __global__ void kernel_setupHash(BallsDeviceData data) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
     
-    unsigned int h = data.hashVals[idx];
+    unsigned int h = data.hashVals.buffer[idx];
     
     // Find cell boundaries
     if (idx == 0) {
-        data.hashCellFirst[h] = 0;
+        data.hashCellFirst.buffer[h] = 0;
     } else {
-        unsigned int prevH = data.hashVals[idx - 1];
+        unsigned int prevH = data.hashVals.buffer[idx - 1];
         if (h != prevH) {
-            data.hashCellFirst[h] = idx;
-            data.hashCellLast[prevH] = idx;
+            data.hashCellFirst.buffer[h] = idx;
+            data.hashCellLast.buffer[prevH] = idx;
         }
     }
     
     if (idx == data.numBalls - 1) {
-        data.hashCellLast[h] = data.numBalls;
+        data.hashCellLast.buffer[h] = data.numBalls;
     }
     
     // Copy positions to sorted arrays
-    int sortedId = data.hashIds[idx];
+    int sortedId = data.hashIds.buffer[idx];
     float* ballData = data.vboData + sortedId * 14;
-    data.sortedPos[idx] = Vec3(ballData[0], ballData[1], ballData[2]);
-    data.sortedPrevPos[idx] = data.prevPos[sortedId];
+    data.sortedPos.buffer[idx] = Vec3(ballData[0], ballData[1], ballData[2]);
+    data.sortedPrevPos.buffer[idx] = data.prevPos.buffer[sortedId];
 }
 
 // Kernel 4: Ball-to-ball collision
@@ -146,12 +177,12 @@ __global__ void kernel_ballCollision(BallsDeviceData data, float bounce) {
                 
                 unsigned int h = abs((cellX * 92837111) ^ (cellY * 689287499) ^ (cellZ * 283923481)) % HASH_SIZE;
                 
-                int first = data.hashCellFirst[h];
-                int last = data.hashCellLast[h];
+                int first = data.hashCellFirst.buffer[h];
+                int last = data.hashCellLast.buffer[h];
                 
                 // Check all balls in this cell
                 for (int i = first; i < last; i++) {
-                    int otherIdx = data.hashIds[i];
+                    int otherIdx = data.hashIds.buffer[i];
                     if (otherIdx == idx) continue;
                     
                     // Get other ball data
@@ -176,7 +207,7 @@ __global__ void kernel_ballCollision(BallsDeviceData data, float bounce) {
                         pos -= correction;
                         
                         // Calculate relative velocity
-                        Vec3 relVel = data.vel[otherIdx] - data.vel[idx];
+                        Vec3 relVel = data.vel.buffer[otherIdx] - data.vel.buffer[idx];
                         float dvn = relVel.dot(normal);
                         
                         // Only resolve if balls are moving towards each other
@@ -184,12 +215,12 @@ __global__ void kernel_ballCollision(BallsDeviceData data, float bounce) {
                             // Apply impulse
                             float impulse = dvn * bounce;
                             Vec3 impulseVec = normal * impulse;
-                            data.vel[idx] += impulseVec;
+                            data.vel.buffer[idx] += impulseVec;
                             
                             // Add spin from collision
                             float spinFactor = 0.3f;
                             Vec3 tangent = relVel - normal * dvn;
-                            data.angVel[idx] += tangent.cross(normal) * spinFactor;
+                            data.angVel.buffer[idx] += tangent.cross(normal) * spinFactor;
                         }
                     }
                 }
@@ -217,37 +248,37 @@ __global__ void kernel_wallCollision(BallsDeviceData data, float roomSize, float
     // X axis walls
     if (pos.x - radius < -halfRoom) {
         pos.x = -halfRoom + radius;
-        data.vel[idx].x = -data.vel[idx].x * bounce;
-        data.angVel[idx] += Vec3(0, data.vel[idx].z, -data.vel[idx].y) * 0.5f;
+        data.vel.buffer[idx].x = -data.vel.buffer[idx].x * bounce;
+        data.angVel.buffer[idx] += Vec3(0, data.vel.buffer[idx].z, -data.vel.buffer[idx].y) * 0.5f;
     }
     if (pos.x + radius > halfRoom) {
         pos.x = halfRoom - radius;
-        data.vel[idx].x = -data.vel[idx].x * bounce;
-        data.angVel[idx] += Vec3(0, -data.vel[idx].z, data.vel[idx].y) * 0.5f;
+        data.vel.buffer[idx].x = -data.vel.buffer[idx].x * bounce;
+        data.angVel.buffer[idx] += Vec3(0, -data.vel.buffer[idx].z, data.vel.buffer[idx].y) * 0.5f;
     }
     
     // Y axis (floor and ceiling)
     if (pos.y - radius < 0) {
         pos.y = radius;
-        data.vel[idx].y = -data.vel[idx].y * bounce;
-        data.angVel[idx] += Vec3(data.vel[idx].z, 0, -data.vel[idx].x) * 0.5f;
+        data.vel.buffer[idx].y = -data.vel.buffer[idx].y * bounce;
+        data.angVel.buffer[idx] += Vec3(data.vel.buffer[idx].z, 0, -data.vel.buffer[idx].x) * 0.5f;
     }
     if (pos.y + radius > roomSize) {
         pos.y = roomSize - radius;
-        data.vel[idx].y = -data.vel[idx].y * bounce;
-        data.angVel[idx] += Vec3(-data.vel[idx].z, 0, data.vel[idx].x) * 0.5f;
+        data.vel.buffer[idx].y = -data.vel.buffer[idx].y * bounce;
+        data.angVel.buffer[idx] += Vec3(-data.vel.buffer[idx].z, 0, data.vel.buffer[idx].x) * 0.5f;
     }
     
     // Z axis walls
     if (pos.z - radius < -halfRoom) {
         pos.z = -halfRoom + radius;
-        data.vel[idx].z = -data.vel[idx].z * bounce;
-        data.angVel[idx] += Vec3(-data.vel[idx].y, data.vel[idx].x, 0) * 0.5f;
+        data.vel.buffer[idx].z = -data.vel.buffer[idx].z * bounce;
+        data.angVel.buffer[idx] += Vec3(-data.vel.buffer[idx].y, data.vel.buffer[idx].x, 0) * 0.5f;
     }
     if (pos.z + radius > halfRoom) {
         pos.z = halfRoom - radius;
-        data.vel[idx].z = -data.vel[idx].z * bounce;
-        data.angVel[idx] += Vec3(data.vel[idx].y, -data.vel[idx].x, 0) * 0.5f;
+        data.vel.buffer[idx].z = -data.vel.buffer[idx].z * bounce;
+        data.angVel.buffer[idx] += Vec3(data.vel.buffer[idx].y, -data.vel.buffer[idx].x, 0) * 0.5f;
     }
     
     // Write back
@@ -267,7 +298,7 @@ __global__ void kernel_integrateQuaternions(BallsDeviceData data, float dt) {
     Quat quat(ballData[8], ballData[9], ballData[10], ballData[7]); // x, y, z, w
     
     // Integrate rotation
-    Vec3 omega = data.angVel[idx] * dt;
+    Vec3 omega = data.angVel.buffer[idx] * dt;
     quat = quat.rotateLinear(quat, omega);
     
     // Write back
@@ -313,17 +344,17 @@ __global__ void kernel_initBalls(BallsDeviceData data, float roomSize, unsigned 
     ballData[13] = 0.0f;
     
     // Random velocity
-    data.vel[idx].x = -2.0f + curand_uniform(&state) * 4.0f;
-    data.vel[idx].y = -2.0f + curand_uniform(&state) * 4.0f;
-    data.vel[idx].z = -2.0f + curand_uniform(&state) * 4.0f;
+    data.vel.buffer[idx].x = -2.0f + curand_uniform(&state) * 4.0f;
+    data.vel.buffer[idx].y = -2.0f + curand_uniform(&state) * 4.0f;
+    data.vel.buffer[idx].z = -2.0f + curand_uniform(&state) * 4.0f;
     
     // Random angular velocity
-    data.angVel[idx].x = -3.0f + curand_uniform(&state) * 6.0f;
-    data.angVel[idx].y = -3.0f + curand_uniform(&state) * 6.0f;
-    data.angVel[idx].z = -3.0f + curand_uniform(&state) * 6.0f;
+    data.angVel.buffer[idx].x = -3.0f + curand_uniform(&state) * 6.0f;
+    data.angVel.buffer[idx].y = -3.0f + curand_uniform(&state) * 6.0f;
+    data.angVel.buffer[idx].z = -3.0f + curand_uniform(&state) * 6.0f;
     
     // Store radius
-    data.radii[idx] = ballData[3];
+    data.radii.buffer[idx] = ballData[3];
 }
 
 // Host functions callable from BallsDemo.cpp
@@ -336,26 +367,26 @@ extern "C" void initCudaPhysics(int numBalls, float roomSize, GLuint vbo, cudaGr
     float maxRadius = (0.1f + 0.3f) * 1.0f;  // Maximum possible radius
     g_deviceData.gridSpacing = 2.5f * maxRadius;
     
-    // Allocate physics arrays
-    cudaMalloc(&g_deviceData.vel, numBalls * sizeof(Vec3));
-    cudaMalloc(&g_deviceData.angVel, numBalls * sizeof(Vec3));
-    cudaMalloc(&g_deviceData.prevPos, numBalls * sizeof(Vec3));
-    cudaMalloc(&g_deviceData.radii, numBalls * sizeof(float));
+    // Allocate physics arrays using DeviceBuffer
+    g_deviceData.vel.resize(numBalls, false);
+    g_deviceData.angVel.resize(numBalls, false);
+    g_deviceData.prevPos.resize(numBalls, false);
+    g_deviceData.radii.resize(numBalls, false);
     
-    // Allocate hash grid
-    cudaMalloc(&g_deviceData.hashVals, numBalls * sizeof(int));
-    cudaMalloc(&g_deviceData.hashIds, numBalls * sizeof(int));
-    cudaMalloc(&g_deviceData.hashCellFirst, HASH_SIZE * sizeof(int));
-    cudaMalloc(&g_deviceData.hashCellLast, HASH_SIZE * sizeof(int));
-    cudaMalloc(&g_deviceData.sortedPos, numBalls * sizeof(Vec3));
-    cudaMalloc(&g_deviceData.sortedPrevPos, numBalls * sizeof(Vec3));
+    // Allocate hash grid using DeviceBuffer
+    g_deviceData.hashVals.resize(numBalls, false);
+    g_deviceData.hashIds.resize(numBalls, false);
+    g_deviceData.hashCellFirst.resize(HASH_SIZE, false);
+    g_deviceData.hashCellLast.resize(HASH_SIZE, false);
+    g_deviceData.sortedPos.resize(numBalls, false);
+    g_deviceData.sortedPrevPos.resize(numBalls, false);
     
     // Initialize memory
-    cudaMemset(g_deviceData.vel, 0, numBalls * sizeof(Vec3));
-    cudaMemset(g_deviceData.angVel, 0, numBalls * sizeof(Vec3));
-    cudaMemset(g_deviceData.prevPos, 0, numBalls * sizeof(Vec3));
-    cudaMemset(g_deviceData.hashCellFirst, 0, HASH_SIZE * sizeof(int));
-    cudaMemset(g_deviceData.hashCellLast, 0, HASH_SIZE * sizeof(int));
+    g_deviceData.vel.setZero();
+    g_deviceData.angVel.setZero();
+    g_deviceData.prevPos.setZero();
+    g_deviceData.hashCellFirst.setZero();
+    g_deviceData.hashCellLast.setZero();
     
     // Register VBO with CUDA
     cudaGraphicsGLRegisterBuffer(vboResource, vbo, cudaGraphicsMapFlagsWriteDiscard);
@@ -404,12 +435,12 @@ extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float 
     kernel_fillHash<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData);
     
     // Sort by hash
-    thrust::device_ptr<int> hashVals(g_deviceData.hashVals);
-    thrust::device_ptr<int> hashIds(g_deviceData.hashIds);
+    thrust::device_ptr<int> hashVals(g_deviceData.hashVals.buffer);
+    thrust::device_ptr<int> hashIds(g_deviceData.hashIds.buffer);
     thrust::sort_by_key(hashVals, hashVals + g_deviceData.numBalls, hashIds);
     
-    cudaMemset(g_deviceData.hashCellFirst, 0, HASH_SIZE * sizeof(int));
-    cudaMemset(g_deviceData.hashCellLast, 0, HASH_SIZE * sizeof(int));
+    g_deviceData.hashCellFirst.setZero();
+    g_deviceData.hashCellLast.setZero();
     
     kernel_setupHash<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData);
     
@@ -432,30 +463,10 @@ extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float 
 extern "C" void cleanupCudaPhysics(cudaGraphicsResource* vboResource) {
     if (g_deviceData.numBalls == 0) return;
     
-    // Free all device memory
-    if (g_deviceData.vel) cudaFree(g_deviceData.vel);
-    if (g_deviceData.angVel) cudaFree(g_deviceData.angVel);
-    if (g_deviceData.prevPos) cudaFree(g_deviceData.prevPos);
-    if (g_deviceData.radii) cudaFree(g_deviceData.radii);
-    if (g_deviceData.hashVals) cudaFree(g_deviceData.hashVals);
-    if (g_deviceData.hashIds) cudaFree(g_deviceData.hashIds);
-    if (g_deviceData.hashCellFirst) cudaFree(g_deviceData.hashCellFirst);
-    if (g_deviceData.hashCellLast) cudaFree(g_deviceData.hashCellLast);
-    if (g_deviceData.sortedPos) cudaFree(g_deviceData.sortedPos);
-    if (g_deviceData.sortedPrevPos) cudaFree(g_deviceData.sortedPrevPos);
+    // Free all device memory using DeviceBuffer::free()
+    g_deviceData.free();
     
-    // Zero out the structure
-    g_deviceData.numBalls = 0;
-    g_deviceData.vel = nullptr;
-    g_deviceData.angVel = nullptr;
-    g_deviceData.prevPos = nullptr;
-    g_deviceData.radii = nullptr;
-    g_deviceData.hashVals = nullptr;
-    g_deviceData.hashIds = nullptr;
-    g_deviceData.hashCellFirst = nullptr;
-    g_deviceData.hashCellLast = nullptr;
-    g_deviceData.sortedPos = nullptr;
-    g_deviceData.sortedPrevPos = nullptr;
+    // Zero out VBO pointer
     g_deviceData.vboData = nullptr;
     
     // Unregister VBO
