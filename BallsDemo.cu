@@ -16,6 +16,7 @@ struct BallsDeviceData {
     void free()  // no destructor because cuda would call it in the kernels
     {
         vel.free();
+        prevPos.free();
         angVel.free();
         radii.free();
         hashVals.free();
@@ -25,7 +26,6 @@ struct BallsDeviceData {
         ballBoundsLowers.free();
         ballBoundsUppers.free();
         posCorr.free();
-        velCorr.free();
         angVelCorr.free();
         numBalls = 0;
     }
@@ -34,6 +34,7 @@ struct BallsDeviceData {
     {
         size_t s = 0;
         s += vel.allocationSize();
+        s += prevPos.allocationSize();
         s += angVel.allocationSize();
         s += radii.allocationSize();
         s += hashVals.allocationSize();
@@ -43,7 +44,6 @@ struct BallsDeviceData {
         s += ballBoundsLowers.allocationSize();
         s += ballBoundsUppers.allocationSize();
         s += posCorr.allocationSize();
-        s += velCorr.allocationSize();
         s += angVelCorr.allocationSize();
         return s;
     }
@@ -54,6 +54,7 @@ struct BallsDeviceData {
     
     // Physics data
     DeviceBuffer<Vec3> vel;           // Velocities
+    DeviceBuffer<Vec3> prevPos;       // Previous positions (for PBD)
     DeviceBuffer<Vec3> angVel;        // Angular velocities
     DeviceBuffer<float> radii;        // Radius per ball (for variable sizes)
     
@@ -70,7 +71,6 @@ struct BallsDeviceData {
     
     // Collision correction buffers (for symmetric resolution)
     DeviceBuffer<Vec3> posCorr;       // Position corrections
-    DeviceBuffer<Vec3> velCorr;       // Velocity corrections
     DeviceBuffer<Vec3> angVelCorr;    // Angular velocity corrections
     
     // VBO data (mapped from OpenGL)
@@ -90,7 +90,7 @@ __device__ inline int hashPosition(const Vec3& pos, float gridSpacing, float wor
     return h;
 }
 
-// Kernel 1: Integrate - apply gravity and update positions
+// Kernel 1: Integrate - save previous position and predict new position (PBD)
 __global__ void kernel_integrate(BallsDeviceData data, float dt, Vec3 gravity, float friction) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
@@ -99,17 +99,17 @@ __global__ void kernel_integrate(BallsDeviceData data, float dt, Vec3 gravity, f
     float* ballData = data.vboData + idx * 14;
     Vec3 pos(ballData[0], ballData[1], ballData[2]);
     
-    // Apply gravity
-    data.vel[idx] += gravity * dt;
+    // Store previous position
+    data.prevPos[idx] = pos;
     
-    // Apply friction
+    // Apply friction to velocity
     data.vel[idx] *= friction;
     data.angVel[idx] *= friction;
     
-    // Update position
-    pos += data.vel[idx] * dt;
+    // Predict position: pos = pos + vel * dt + gravity * dt^2
+    pos += data.vel[idx] * dt + gravity * (dt * dt);
     
-    // Write position back to VBO
+    // Write predicted position back to VBO
     ballData[0] = pos.x;
     ballData[1] = pos.y;
     ballData[2] = pos.z;
@@ -208,38 +208,6 @@ __device__ inline void handleBallCollision(
         atomicAdd(&data.posCorr[otherIdx].x, separation.x);
         atomicAdd(&data.posCorr[otherIdx].y, separation.y);
         atomicAdd(&data.posCorr[otherIdx].z, separation.z);
-        
-        // Velocity correction: calculate relative velocity and impulse
-        Vec3 relVel = data.vel[otherIdx] - data.vel[idx];
-        float dvn = relVel.dot(normal);
-        
-        // Only resolve if balls are moving towards each other
-        if (dvn < 0) {
-            // Apply impulse (symmetric: equal and opposite)
-            float impulse = dvn * bounce;
-            Vec3 impulseVec = normal * impulse;
-            
-            atomicAdd(&data.velCorr[idx].x, impulseVec.x);
-            atomicAdd(&data.velCorr[idx].y, impulseVec.y);
-            atomicAdd(&data.velCorr[idx].z, impulseVec.z);
-            
-            atomicAdd(&data.velCorr[otherIdx].x, -impulseVec.x);
-            atomicAdd(&data.velCorr[otherIdx].y, -impulseVec.y);
-            atomicAdd(&data.velCorr[otherIdx].z, -impulseVec.z);
-            
-            // Angular velocity correction: add spin from collision
-            float spinFactor = 0.3f;
-            Vec3 tangent = relVel - normal * dvn;
-            Vec3 spin = tangent.cross(normal) * spinFactor;
-            
-            atomicAdd(&data.angVelCorr[idx].x, spin.x);
-            atomicAdd(&data.angVelCorr[idx].y, spin.y);
-            atomicAdd(&data.angVelCorr[idx].z, spin.z);
-            
-            atomicAdd(&data.angVelCorr[otherIdx].x, -spin.x);
-            atomicAdd(&data.angVelCorr[otherIdx].y, -spin.y);
-            atomicAdd(&data.angVelCorr[otherIdx].z, -spin.z);
-        }
     }
 }
 
@@ -299,19 +267,19 @@ __global__ void kernel_wallCollision(BallsDeviceData data, float roomSize, float
     
     float halfRoom = roomSize * 0.5f;
     
-    // Define 6 walls as planes (normal points inward, n·p + d = 0 on plane)
+    // Define 5 walls as planes (normal points inward, n·p + d = 0 on plane)
     // Plane equation: n·p + d = 0, where positive values of (n·p + d) mean "inside the room"
-    Plane walls[6] = {
+    Plane walls[5] = {
         Plane(Vec3(-1, 0, 0),  halfRoom),    // +X wall at x = +halfRoom (normal points left)
         Plane(Vec3(1, 0, 0),   halfRoom),    // -X wall at x = -halfRoom (normal points right)
         Plane(Vec3(0, 1, 0),   0),           // Floor at y = 0 (normal points up)
-        Plane(Vec3(0, -1, 0),  roomSize),    // Ceiling at y = roomSize (normal points down)
+//        Plane(Vec3(0, -1, 0),  roomSize),    // Ceiling at y = roomSize (normal points down)
         Plane(Vec3(0, 0, -1),  halfRoom),    // +Z wall at z = +halfRoom (normal points forward)
         Plane(Vec3(0, 0, 1),   halfRoom)     // -Z wall at z = -halfRoom (normal points back)
     };
     
     // Check collision with each wall
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 5; i++) {
         const Plane& wall = walls[i];
         
         // Signed distance from ball center to plane (positive = inside room, negative = outside)
@@ -321,21 +289,6 @@ __global__ void kernel_wallCollision(BallsDeviceData data, float roomSize, float
         if (penetration > 0) {
             // Position correction: push ball back inside the room (in direction of inward normal)
             pos += wall.n * penetration;
-            
-            // Velocity reflection - store original velocity for tangent calculation
-            Vec3 vel = data.vel[idx];
-            float vn = vel.dot(wall.n);
-            
-            if (vn < 0) {  // Moving into/through the wall
-                // Reflect normal component of velocity
-                data.vel[idx] -= wall.n * vn * (1.0f + bounce);
-                
-                // Add spin from tangential velocity (use original velocity, not reflected)
-                Vec3 tangentVel = vel - wall.n * vn;
-                // For rolling: ω = (n × v_tangent) / radius
-                // Use friction factor < 1.0 for gradual spin-up
-                data.angVel[idx] = wall.n.cross(tangentVel) / radius;
-            }
         }
     }
     
@@ -404,7 +357,7 @@ __global__ void kernel_ballCollision_BVH(BallsDeviceData data, float bounce) {
     }
 }
 
-// Kernel: Apply collision corrections with relaxation
+// Kernel: Apply collision corrections with relaxation (PBD)
 __global__ void kernel_applyCorrections(BallsDeviceData data, float relaxation) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
@@ -413,15 +366,27 @@ __global__ void kernel_applyCorrections(BallsDeviceData data, float relaxation) 
     float* ballData = data.vboData + idx * 14;
     Vec3 pos(ballData[0], ballData[1], ballData[2]);
     
-    // Apply corrections with relaxation factor
+    // Apply position corrections with relaxation factor
     pos += data.posCorr[idx] * relaxation;
-    data.vel[idx] += data.velCorr[idx] * relaxation;
     data.angVel[idx] += data.angVelCorr[idx] * relaxation;
     
     // Write position back to VBO
     ballData[0] = pos.x;
     ballData[1] = pos.y;
     ballData[2] = pos.z;
+}
+
+// Kernel: Derive velocity from position change (PBD)
+__global__ void kernel_deriveVelocity(BallsDeviceData data, float dt) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx >= data.numBalls) return;
+    
+    // Read current position from VBO
+    float* ballData = data.vboData + idx * 14;
+    Vec3 pos(ballData[0], ballData[1], ballData[2]);
+    
+    // Derive velocity: v = (pos - prevPos) / dt
+    data.vel[idx] = (pos - data.prevPos[idx]) / dt;
 }
 
 // Kernel 6: Integrate quaternions
@@ -436,7 +401,7 @@ __global__ void kernel_integrateQuaternions(BallsDeviceData data, float dt) {
     
     // Integrate rotation
     Vec3 omega = data.angVel[idx] * dt;
-    quat = quat.rotateLinear(quat, omega);
+//    quat = quat.rotateLinear(quat, omega);
     
     // Write back
     ballData[7] = quat.w;
@@ -445,8 +410,9 @@ __global__ void kernel_integrateQuaternions(BallsDeviceData data, float dt) {
     ballData[10] = quat.z;
 }
 
-// Initialization kernel - sets up random balls on GPU
-__global__ void kernel_initBalls(BallsDeviceData data, float roomSize, unsigned long seed) {
+// Initialization kernel - sets up balls on a grid
+__global__ void kernel_initBalls(BallsDeviceData data, float roomSize, float minRadius, float maxRadius, 
+                                  int ballsPerLayer, int ballsPerRow, float gridSpacing, unsigned long seed) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
     
@@ -463,13 +429,19 @@ __global__ void kernel_initBalls(BallsDeviceData data, float roomSize, unsigned 
     
     float* ballData = data.vboData + idx * 14;
     
-    // Random position
-    ballData[0] = -roomSize * 0.4f + FRAND() * roomSize * 0.8f;  // x
-    ballData[1] = 1.0f + FRAND() * roomSize * 0.5f;              // y
-    ballData[2] = -roomSize * 0.4f + FRAND() * roomSize * 0.8f;  // z
+    // Grid-based position
+    int layer = idx / ballsPerLayer;
+    int inLayer = idx % ballsPerLayer;
+    int row = inLayer / ballsPerRow;
+    int col = inLayer % ballsPerRow;
+    
+    float halfRoom = roomSize * 0.5f;
+    ballData[0] = -halfRoom + gridSpacing + col * gridSpacing;  // x
+    ballData[2] = -halfRoom + gridSpacing + row * gridSpacing;  // z
+    ballData[1] = maxRadius + layer * gridSpacing;              // y (start from floor + radius)
     
     // Random radius
-    ballData[3] = (0.1f + FRAND() * 0.3f) * 1.0f;
+    ballData[3] = minRadius + FRAND() * (maxRadius - minRadius);
     
     // Random color (vibrant)
     ballData[4] = 0.3f + FRAND() * 0.7f;  // r
@@ -507,17 +479,17 @@ __global__ void kernel_initBalls(BallsDeviceData data, float roomSize, unsigned 
 
 static BVHBuilder* g_bvhBuilder = nullptr;
 
-extern "C" void initCudaPhysics(int numBalls, float roomSize, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder) {
+extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, float maxRadius, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder) {
     g_deviceData.numBalls = numBalls;
     g_deviceData.worldOrig = -100.0f;
     g_bvhBuilder = bvhBuilder;
     
-    // Find maximum radius (updated to match smaller balls)
-    float maxRadius = (0.1f + 0.3f) * 1.0f;  // Maximum possible radius
+    // Use provided maximum radius
     g_deviceData.gridSpacing = 2.5f * maxRadius;
     
     // Allocate physics arrays using DeviceBuffer
     g_deviceData.vel.resize(numBalls, false);
+    g_deviceData.prevPos.resize(numBalls, false);
     g_deviceData.angVel.resize(numBalls, false);
     g_deviceData.radii.resize(numBalls, false);
     
@@ -533,7 +505,6 @@ extern "C" void initCudaPhysics(int numBalls, float roomSize, GLuint vbo, cudaGr
     
     // Allocate collision correction buffers
     g_deviceData.posCorr.resize(numBalls, false);
-    g_deviceData.velCorr.resize(numBalls, false);
     g_deviceData.angVelCorr.resize(numBalls, false);
     
     // Initialize memory
@@ -554,11 +525,21 @@ extern "C" void initCudaPhysics(int numBalls, float roomSize, GLuint vbo, cudaGr
     // Update VBO pointer
     g_deviceData.vboData = d_vboData;
     
-    // Initialize balls with random data
+    // Calculate grid layout parameters
+    float gridSpacing = 2.0f * maxRadius;  // Space between ball centers
+    float halfRoom = roomSize * 0.5f;
+    float usableWidth = roomSize - 2.0f * gridSpacing;  // Leave margin from walls
+    int ballsPerRow = (int)(usableWidth / gridSpacing);
+    if (ballsPerRow < 1) ballsPerRow = 1;
+    int ballsPerLayer = ballsPerRow * ballsPerRow;
+    
+    // Initialize balls with grid data
     int numBlocks = (numBalls + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
     printf("Launching kernel_initBalls with %d blocks, %d threads per block, %d total balls\n", numBlocks, THREADS_PER_BLOCK, numBalls);
+    printf("Grid layout: %d balls per row, %d balls per layer, spacing: %.2f\n", ballsPerRow, ballsPerLayer, gridSpacing);
     
-    kernel_initBalls<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, roomSize, time(nullptr));
+    kernel_initBalls<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, roomSize, minRadius, maxRadius, 
+                                                        ballsPerLayer, ballsPerRow, gridSpacing, time(nullptr));
     
     // Check for kernel launch errors
     cudaError_t launchErr = cudaGetLastError();
@@ -602,7 +583,6 @@ extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float 
     
     // Zero correction buffers before collision detection
     g_deviceData.posCorr.setZero();
-    g_deviceData.velCorr.setZero();
     g_deviceData.angVelCorr.setZero();
     
     if (useBVH) {
@@ -647,6 +627,9 @@ extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float 
     kernel_applyCorrections<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, relaxation);
     
     kernel_wallCollision<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, roomSize, bounce);
+    
+    // Derive velocity from position change (PBD)
+    kernel_deriveVelocity<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, dt);
     
     kernel_integrateQuaternions<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, dt);
     

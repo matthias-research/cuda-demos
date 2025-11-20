@@ -155,7 +155,7 @@ BallsDemo::~BallsDemo() {
 void BallsDemo::initBalls() {
     // Initialize CUDA physics with the VBO
     if (useCuda && vbo != 0) {
-        initCudaPhysics(numBalls, roomSize, vbo, &cudaVboResource, bvhBuilder);
+        initCudaPhysics(numBalls, roomSize, minRadius, maxRadius, vbo, &cudaVboResource, bvhBuilder);
     }
 }
 
@@ -263,8 +263,8 @@ void BallsDemo::update(float deltaTime) {
     }
     lastUpdateTime = deltaTime;
     
-    // Update physics on GPU
-    if (useCuda && cudaVboResource) {
+    // Update physics on GPU (only if not paused)
+    if (!paused && useCuda && cudaVboResource) {
         updateCudaPhysics(deltaTime, Vec3(0, -gravity, 0), friction, bounce, roomSize, cudaVboResource, useBVH);
     }
 }
@@ -382,6 +382,13 @@ void BallsDemo::renderUI() {
     ImGui::Text("=== GPU-Accelerated Physics Demo ===");
     ImGui::Separator();
     
+    if (paused) {
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "[PAUSED] - Press 'P' to resume");
+    } else {
+        ImGui::Text("Press 'P' to pause simulation");
+    }
+    ImGui::Separator();
+    
     ImGui::Text("Performance:");
     ImGui::Text("  FPS: %.1f", fps);
     ImGui::Text("  Frame Time: %.2f ms", lastUpdateTime * 1000.0f);
@@ -399,7 +406,7 @@ void BallsDemo::renderUI() {
     ImGui::Text("GPU Simulation Parameters:");
     
     bool ballCountChanged = false;
-    if (ImGui::SliderInt("Ball Count##balls", &numBalls, 100, 10000)) {
+    if (ImGui::SliderInt("Ball Count##balls", &numBalls, 1000, 100000)) {
         ballCountChanged = true;
     }
     
@@ -480,3 +487,8 @@ void BallsDemo::reset() {
     if (camera) camera->resetView();
 }
 
+void BallsDemo::onKeyPress(unsigned char key) {
+    if (key == 'p' || key == 'P') {
+        paused = !paused;
+    }
+}

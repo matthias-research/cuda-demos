@@ -78,6 +78,7 @@ void display() {
     static float lastFrameTime = 0.0f;
     float currentTime = glutGet(GLUT_ELAPSED_TIME) / 1000.0f;
     float deltaTime = currentTime - lastFrameTime;
+    deltaTime = 1.0f / 30.0f; // fixed frame rate
     lastFrameTime = currentTime;
     
     // Update FPS

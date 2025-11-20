@@ -23,8 +23,9 @@ void Camera::resetView()
 {
     if (up.z == 0.0f)
     {
-        pos = Vec3(0.0f, 2.0f, 10.0f);
-        forward = Vec3(0.0f, 0.0f, -1.0f);
+        pos = Vec3(0.0f, 15.0f, 35.0f);
+        forward = Vec3(0.0f, -0.3f, -1.0f);
+        forward.normalize();
     }
     else
     {

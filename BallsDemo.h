@@ -19,16 +19,20 @@ struct Ball {
 };
 
 // CUDA physics functions (implemented in BallsDemo.cu)
-extern "C" void initCudaPhysics(int numBalls, float roomSize, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder);
+extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, float maxRadius, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder);
 extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float bounce, float roomSize, cudaGraphicsResource* vboResource, bool useBVH);
 extern "C" void cleanupCudaPhysics(cudaGraphicsResource* vboResource);
 
 class BallsDemo : public Demo {
 private:
-    int numBalls = 1000;  // Start with more balls to showcase GPU power
+    int numBalls = 10000;  // Start with more balls to showcase GPU power
     float gravity = 9.8f;
     float bounce = 0.85f;  // Coefficient of restitution
     float friction = 1.0f; // no friction
+    
+    // Ball size parameters
+    float minRadius = 0.1f;
+    float maxRadius = 0.4f;
     
     // Simulation bounds
     float roomSize = 20.0f;  // Double size room for more balls
@@ -48,6 +52,7 @@ private:
     // Performance tracking
     float lastUpdateTime = 0.0f;
     float fps = 0.0f;
+    bool paused = false;
     
     // Camera (reference to main camera)
     Camera* camera = nullptr;
@@ -75,5 +80,6 @@ public:
     void render(uchar4* d_out, int width, int height) override;
     void renderUI() override;
     void reset() override;
+    void onKeyPress(unsigned char key) override;
 };
 
