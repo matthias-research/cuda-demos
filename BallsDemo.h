@@ -4,6 +4,8 @@
 #include "Camera.h"
 #include "Vec.h"
 #include "BVH.h"
+#include "Mesh.h"
+#include "Renderer.h"
 #include <GL/glew.h>
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
@@ -58,9 +60,14 @@ private:
     Camera* camera = nullptr;
     
     // Lighting
-    float lightPosX = 5.0f;
-    float lightPosY = 8.0f;
-    float lightPosZ = 5.0f;
+    float lightDirX = 0.3f;
+    float lightDirY = 1.0f;
+    float lightDirZ = 0.5f;
+    
+    // Static mesh rendering
+    Mesh* staticMesh = nullptr;
+    Renderer* renderer = nullptr;
+    bool showMesh = false;
     
     void initBalls();
     void initGL();
@@ -78,6 +85,7 @@ public:
     bool raycast(const Vec3& orig, const Vec3& dir, float& t) override;
     void update(float deltaTime) override;
     void render(uchar4* d_out, int width, int height) override;
+    void render3D(int width, int height) override;
     void renderUI() override;
     void reset() override;
     void onKeyPress(unsigned char key) override;

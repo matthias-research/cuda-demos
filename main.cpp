@@ -102,7 +102,10 @@ void display() {
     size_t num_bytes;
     cudaGraphicsResourceGetMappedPointer((void**)&d_out, &num_bytes, cuda_pbo_resource);
     
-    // Render current demo
+    // Call render3D first (if demo supports it) for OpenGL-based mesh rendering
+    demos[currentDemoIndex]->render3D(windowWidth, windowHeight);
+    
+    // Render current demo (CUDA or other)
     demos[currentDemoIndex]->render(d_out, windowWidth, windowHeight);
     
     cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0);

@@ -18,6 +18,10 @@ public:
     virtual void renderUI() = 0;  // ImGui controls for this demo
     virtual void reset() = 0;
     
+    // Optional 3D mesh rendering (called before CUDA render if implemented)
+    // Use for OpenGL-based mesh rendering that gets composited with CUDA output
+    virtual void render3D(int width, int height) {}
+    
     // Camera access for 3D demos
     virtual void setCamera(Camera* cam) {}
     

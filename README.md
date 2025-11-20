@@ -31,7 +31,7 @@ cd vcpkg
 .\bootstrap-vcpkg.bat
 
 # Install dependencies (static libraries)
-.\vcpkg install freeglut:x64-windows-static glew:x64-windows-static imgui[opengl3-binding,glut-binding]:x64-windows-static
+.\vcpkg install freeglut:x64-windows-static glew:x64-windows-static imgui[opengl3-binding,glut-binding]:x64-windows-static tinygltf:x64-windows-static
 
 # Note: vcpkg integration is disabled for this project to avoid path conflicts.
 # The project uses explicit relative paths to vcpkg libraries.

@@ -48,7 +48,7 @@ const char* sphereFragmentShader = R"(
 const float PI = 3.14159265359;
 
 uniform vec3 viewPos;
-uniform vec3 lightPos;
+uniform vec3 lightDir;
 
 in vec3 fragPos;
 in float radius;
@@ -104,8 +104,7 @@ void main()
         color = vec3(1.0, 1.0, 1.0) - color;
     }
     
-    // Phong lighting
-    vec3 lightDir = normalize(lightPos - surfacePos);
+    // Phong lighting (directional light)
     float diffuse = max(0.0, dot(lightDir, normal));
     
     vec3 halfwayDir = normalize(lightDir + viewDir);
@@ -138,6 +137,17 @@ static GLuint compileShader(GLenum type, const char* source) {
 BallsDemo::BallsDemo() : vao(0), vbo(0), sphereShader(0), fbo(0), renderTexture(0),
                          fbWidth(0), fbHeight(0) {
     bvhBuilder = new BVHBuilder();
+    
+    // Initialize mesh renderer
+    renderer = new Renderer();
+    renderer->init();
+    
+    // Optionally load a static mesh (uncomment when you have a .glb file)
+    staticMesh = new Mesh();
+    if (staticMesh->load("assets/cliff.glb")) {
+        showMesh = true;
+    }
+    
     initGL();
     initBalls();
 }
@@ -148,6 +158,14 @@ BallsDemo::~BallsDemo() {
     }
     if (bvhBuilder) {
         delete bvhBuilder;
+    }
+    if (staticMesh) {
+        staticMesh->cleanup();
+        delete staticMesh;
+    }
+    if (renderer) {
+        renderer->cleanup();
+        delete renderer;
     }
     cleanupGL();
 }
@@ -294,6 +312,20 @@ void BallsDemo::render(uchar4* d_out, int width, int height) {
     glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     
+    // Render static mesh first (if enabled)
+    if (showMesh && staticMesh && renderer) {
+        // Sync light direction
+        renderer->getLight().x = lightDirX;
+        renderer->getLight().y = lightDirY;
+        renderer->getLight().z = lightDirZ;
+        
+        // Disable backface culling to see both sides
+        glDisable(GL_CULL_FACE);
+        
+        // Use the mesh's transform from the glTF file
+        renderer->renderMesh(*staticMesh, camera, width, height, 1.0f, staticMesh->getData().transform);
+    }
+    
     // Enable point sprites
     glEnable(GL_PROGRAM_POINT_SIZE);
     glEnable(GL_POINT_SPRITE);
@@ -334,7 +366,7 @@ void BallsDemo::render(uchar4* d_out, int width, int height) {
     // Projection matrix
     float fov = camera->fov * 3.14159f / 180.0f;
     float aspect = (float)width / height;
-    float near = 0.1f, far = 100.0f;
+    float near = 0.1f, far = 1000.0f;  // Increased far plane for large meshes
     for (int i = 0; i < 16; i++) projection[i] = 0.0f;
     float f = 1.0f / tan(fov * 0.5f);
     projection[0] = f / aspect;
@@ -347,13 +379,17 @@ void BallsDemo::render(uchar4* d_out, int width, int height) {
     GLint projLoc = glGetUniformLocation(sphereShader, "projectionMat");
     GLint viewLoc = glGetUniformLocation(sphereShader, "viewMat");
     GLint viewPosLoc = glGetUniformLocation(sphereShader, "viewPos");
-    GLint lightPosLoc = glGetUniformLocation(sphereShader, "lightPos");
+    GLint lightDirLoc = glGetUniformLocation(sphereShader, "lightDir");
     GLint pointScaleLoc = glGetUniformLocation(sphereShader, "pointScale");
     
     glUniformMatrix4fv(projLoc, 1, GL_FALSE, projection);
     glUniformMatrix4fv(viewLoc, 1, GL_FALSE, view);
     glUniform3f(viewPosLoc, camPos.x, camPos.y, camPos.z);
-    glUniform3f(lightPosLoc, lightPosX, lightPosY, lightPosZ);
+    
+    // Directional light (normalized direction)
+    Vec3 lightDirection = Vec3(lightDirX, lightDirY, lightDirZ);
+    lightDirection.normalize();
+    glUniform3f(lightDirLoc, lightDirection.x, lightDirection.y, lightDirection.z);
     glUniform1f(pointScaleLoc, height * projection[5]);
     
     // Draw all balls as points (VBO is already filled by CUDA)
@@ -427,10 +463,23 @@ void BallsDemo::renderUI() {
     ImGui::Text("  %s", useBVH ? "Using BVH tree traversal" : "Using spatial hash grid");
     
     ImGui::Separator();
-    ImGui::Text("Lighting:");
-    ImGui::SliderFloat("Light X##balls", &lightPosX, -10.0f, 10.0f);
-    ImGui::SliderFloat("Light Y##balls", &lightPosY, 0.0f, 15.0f);
-    ImGui::SliderFloat("Light Z##balls", &lightPosZ, -10.0f, 10.0f);
+    ImGui::Text("Lighting (Directional):");
+    ImGui::SliderFloat("Light Dir X##balls", &lightDirX, -1.0f, 1.0f);
+    ImGui::SliderFloat("Light Dir Y##balls", &lightDirY, -1.0f, 1.0f);
+    ImGui::SliderFloat("Light Dir Z##balls", &lightDirZ, -1.0f, 1.0f);
+    
+    ImGui::Separator();
+    ImGui::Text("Static Mesh:");
+    if (staticMesh) {
+        ImGui::Checkbox("Show Mesh##balls", &showMesh);
+        if (renderer) {
+            ImGui::SliderFloat("Mesh Ambient##balls", &renderer->getMaterial().ambientStrength, 0.0f, 1.0f);
+            ImGui::SliderFloat("Mesh Specular##balls", &renderer->getMaterial().specularStrength, 0.0f, 2.0f);
+        }
+    } else {
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "No mesh loaded");
+        ImGui::Text("Place a .glb file in assets/ folder");
+    }
     
     ImGui::Separator();
     if (ImGui::Button("Reset Simulation##balls", ImVec2(200, 0))) {
@@ -473,9 +522,9 @@ void BallsDemo::reset() {
     bounce = 0.85f;
     friction = 0.99f;
     roomSize = 20.0f;
-    lightPosX = 5.0f;
-    lightPosY = 8.0f;
-    lightPosZ = 5.0f;
+    lightDirX = 0.3f;
+    lightDirY = 1.0f;
+    lightDirZ = 0.5f;
     
     // Reinitialize CUDA physics
     if (cudaVboResource) {
@@ -491,4 +540,9 @@ void BallsDemo::onKeyPress(unsigned char key) {
     if (key == 'p' || key == 'P') {
         paused = !paused;
     }
+}
+
+void BallsDemo::render3D(int width, int height) {
+    // Mesh rendering is now done inside render() method
+    // This method is kept for interface compatibility
 }

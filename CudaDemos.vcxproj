@@ -105,6 +105,8 @@
     <ClCompile Include="BoxesDemo.cpp" />
     <ClCompile Include="MandelbrotDemo.cpp" />
     <ClCompile Include="BallsDemo.cpp" />
+    <ClCompile Include="Mesh.cpp" />
+    <ClCompile Include="Renderer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Demo.h" />
@@ -117,6 +119,8 @@
     <ClInclude Include="BoxesDemo.h" />
     <ClInclude Include="MandelbrotDemo.h" />
     <ClInclude Include="BallsDemo.h" />
+    <ClInclude Include="Mesh.h" />
+    <ClInclude Include="Renderer.h" />
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="BVH.cu" />
