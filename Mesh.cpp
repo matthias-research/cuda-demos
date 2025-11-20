@@ -120,8 +120,15 @@ bool Mesh::load(const std::string& filename) {
             &buffer.data[bufferView.byteOffset + accessor.byteOffset]);
         
         data.positions.resize(accessor.count * 3);
-        for (size_t i = 0; i < accessor.count * 3; i++) {
-            data.positions[i] = positions[i];
+        for (size_t i = 0; i < accessor.count; i++) {
+            // Apply transform to vertices for CUDA collision detection
+            float x = positions[i * 3 + 0];
+            float y = positions[i * 3 + 1];
+            float z = positions[i * 3 + 2];
+            
+            data.positions[i * 3 + 0] = data.transform[0] * x + data.transform[4] * y + data.transform[8] * z + data.transform[12];
+            data.positions[i * 3 + 1] = data.transform[1] * x + data.transform[5] * y + data.transform[9] * z + data.transform[13];
+            data.positions[i * 3 + 2] = data.transform[2] * x + data.transform[6] * y + data.transform[10] * z + data.transform[14];
         }
     }
     
@@ -136,8 +143,15 @@ bool Mesh::load(const std::string& filename) {
             &buffer.data[bufferView.byteOffset + accessor.byteOffset]);
         
         data.normals.resize(accessor.count * 3);
-        for (size_t i = 0; i < accessor.count * 3; i++) {
-            data.normals[i] = normals[i];
+        for (size_t i = 0; i < accessor.count; i++) {
+            // Apply transform rotation to normals (ignore translation)
+            float nx = normals[i * 3 + 0];
+            float ny = normals[i * 3 + 1];
+            float nz = normals[i * 3 + 2];
+            
+            data.normals[i * 3 + 0] = data.transform[0] * nx + data.transform[4] * ny + data.transform[8] * nz;
+            data.normals[i * 3 + 1] = data.transform[1] * nx + data.transform[5] * ny + data.transform[9] * nz;
+            data.normals[i * 3 + 2] = data.transform[2] * nx + data.transform[6] * ny + data.transform[10] * nz;
         }
     }
     

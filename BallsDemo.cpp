@@ -312,20 +312,6 @@ void BallsDemo::render(uchar4* d_out, int width, int height) {
     glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     
-    // Render static mesh first (if enabled)
-    if (showMesh && staticMesh && renderer) {
-        // Sync light direction
-        renderer->getLight().x = lightDirX;
-        renderer->getLight().y = lightDirY;
-        renderer->getLight().z = lightDirZ;
-        
-        // Disable backface culling to see both sides
-        glDisable(GL_CULL_FACE);
-        
-        // Use the mesh's transform from the glTF file
-        renderer->renderMesh(*staticMesh, camera, width, height, 1.0f, staticMesh->getData().transform);
-    }
-    
     // Enable point sprites
     glEnable(GL_PROGRAM_POINT_SIZE);
     glEnable(GL_POINT_SPRITE);
@@ -396,6 +382,22 @@ void BallsDemo::render(uchar4* d_out, int width, int height) {
     glBindVertexArray(vao);
     glDrawArrays(GL_POINTS, 0, numBalls);
     glBindVertexArray(0);
+    
+    // Render static mesh after balls (for proper depth testing)
+    if (showMesh && staticMesh && renderer) {
+        // Sync light direction (normalized, same as balls)
+        Vec3 lightDirection = Vec3(lightDirX, lightDirY, lightDirZ);
+        lightDirection.normalize();
+        renderer->getLight().x = lightDirection.x;
+        renderer->getLight().y = lightDirection.y;
+        renderer->getLight().z = lightDirection.z;
+        
+        // Disable backface culling to see both sides
+        glDisable(GL_CULL_FACE);
+        
+        // Vertices are already transformed, so pass identity matrix to renderer
+        renderer->renderMesh(*staticMesh, camera, width, height, 1.0f, nullptr);
+    }
     
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_POINT_SPRITE);

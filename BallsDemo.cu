@@ -443,10 +443,27 @@ __global__ void kernel_initBalls(BallsDeviceData data, float roomSize, float min
     // Random radius
     ballData[3] = minRadius + FRAND() * (maxRadius - minRadius);
     
-    // Random color (vibrant)
-    ballData[4] = 0.3f + FRAND() * 0.7f;  // r
-    ballData[5] = 0.3f + FRAND() * 0.7f;  // g
-    ballData[6] = 0.3f + FRAND() * 0.7f;  // b
+    // Beach ball colors: red, blue, yellow, white, orange, cyan
+    float colorChoice = FRAND();
+    if (colorChoice < 0.16f) {
+        // Red
+        ballData[4] = 0.9f; ballData[5] = 0.1f; ballData[6] = 0.1f;
+    } else if (colorChoice < 0.32f) {
+        // Blue
+        ballData[4] = 0.1f; ballData[5] = 0.5f; ballData[6] = 0.95f;
+    } else if (colorChoice < 0.48f) {
+        // Yellow
+        ballData[4] = 0.95f; ballData[5] = 0.85f; ballData[6] = 0.1f;
+    } else if (colorChoice < 0.64f) {
+        // White
+        ballData[4] = 0.95f; ballData[5] = 0.95f; ballData[6] = 0.95f;
+    } else if (colorChoice < 0.80f) {
+        // Orange
+        ballData[4] = 0.95f; ballData[5] = 0.5f; ballData[6] = 0.1f;
+    } else {
+        // Cyan
+        ballData[4] = 0.1f; ballData[5] = 0.85f; ballData[6] = 0.85f;
+    }
     
     // Identity quaternion
     ballData[7] = 1.0f;  // w

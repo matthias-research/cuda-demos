@@ -49,8 +49,8 @@ void main()
     // Base color from texture or white
     vec3 baseColor = hasTexture ? texture(textureSampler, TexCoord).rgb : vec3(1.0);
     
-    // Flip normal (glTF exports may have inverted normals)
-    vec3 norm = normalize(-Normal);
+    // Normalize the normal
+    vec3 norm = normalize(Normal);
     
     // Ambient
     vec3 ambient = ambientStrength * baseColor;
