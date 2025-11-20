@@ -499,6 +499,7 @@ int main(int argc, char** argv) {
     // Initialize camera
     camera.init();
     camera.resetView();
+    camera.speed = 1.0f;
     
     // Create demos
     demos.push_back(std::make_unique<BoxesDemo>());

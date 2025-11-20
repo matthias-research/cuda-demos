@@ -31,11 +31,11 @@ private:
     float friction = 1.0f; // no friction
     
     // Ball size parameters
-    float minRadius = 0.1f;
+    float minRadius = 0.2f;
     float maxRadius = 0.4f;
     
     // Simulation bounds
-    float roomSize = 20.0f;  // Double size room for more balls
+    float roomSize = 30.0f;  // Double size room for more balls
     
     // OpenGL resources
     GLuint vao, vbo;

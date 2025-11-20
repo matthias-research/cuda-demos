@@ -578,60 +578,74 @@ extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float 
     // Update VBO pointer
     g_deviceData.vboData = d_vboData;
     
-    // Run physics pipeline
-    kernel_integrate<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, dt, gravity, friction);
-    
-    // Zero correction buffers before collision detection
-    g_deviceData.posCorr.setZero();
-    g_deviceData.angVelCorr.setZero();
-    
+
     if (useBVH) {
         // BVH-based collision detection
-        
+
         // Compute bounds for each ball
-        kernel_computeBallBounds<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData);
-        
+        kernel_computeBallBounds << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData);
+
         // Build BVH
         if (g_bvhBuilder) {
             g_bvhBuilder->build(g_deviceData.bvh,
-                              g_deviceData.ballBoundsLowers.buffer,
-                              g_deviceData.ballBoundsUppers.buffer,
-                              g_deviceData.numBalls,
-                              nullptr,  // No grouping
-                              0);
+                g_deviceData.ballBoundsLowers.buffer,
+                g_deviceData.ballBoundsUppers.buffer,
+                g_deviceData.numBalls,
+                nullptr,  // No grouping
+                0);
         }
-        
-        // BVH-based collision (accumulates corrections)
-        kernel_ballCollision_BVH<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, bounce);
-    } else {
+    }
+    else {
         // Hash grid collision detection
-        
-        kernel_fillHash<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData);
-        
+
+        kernel_fillHash << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData);
+
         // Sort by hash
         thrust::device_ptr<int> hashVals(g_deviceData.hashVals.buffer);
         thrust::device_ptr<int> hashIds(g_deviceData.hashIds.buffer);
         thrust::sort_by_key(hashVals, hashVals + g_deviceData.numBalls, hashIds);
-        
+
         g_deviceData.hashCellFirst.setZero();
         g_deviceData.hashCellLast.setZero();
-        
-        kernel_setupHash<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData);
-        
-        // Hash grid collision (accumulates corrections)
-        kernel_ballCollision<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, bounce);
+
+        kernel_setupHash << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData);
     }
-    
-    // Apply corrections with relaxation
-    const float relaxation = 0.3f;
-    kernel_applyCorrections<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, relaxation);
-    
-    kernel_wallCollision<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, roomSize, bounce);
-    
-    // Derive velocity from position change (PBD)
-    kernel_deriveVelocity<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, dt);
-    
-    kernel_integrateQuaternions<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, dt);
+
+    int numSubSteps = 5;
+
+    float sdt = dt / (float)numSubSteps;
+
+    for (int subStep = 0; subStep < numSubSteps; subStep++)
+    {
+
+        // Run physics pipeline
+        kernel_integrate << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, sdt, gravity, friction);
+
+        // Zero correction buffers before collision detection
+        g_deviceData.posCorr.setZero();
+        g_deviceData.angVelCorr.setZero();
+
+        if (useBVH) {
+            // BVH-based collision (accumulates corrections)
+            kernel_ballCollision_BVH << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, bounce);
+        }
+        else {
+            // Hash grid collision detection
+            kernel_ballCollision << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, bounce);
+        }
+
+        // Apply corrections with relaxation
+        const float relaxation = 0.3f;
+        kernel_applyCorrections << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, relaxation);
+
+        kernel_wallCollision << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, roomSize, bounce);
+
+        // Derive velocity from position change (PBD)
+        kernel_deriveVelocity << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, sdt);
+
+        kernel_integrateQuaternions << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, sdt);
+    }
+
     
     // Unmap VBO
     cudaGraphicsUnmapResources(1, &vboResource, 0);
