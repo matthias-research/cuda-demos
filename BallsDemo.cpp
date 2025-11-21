@@ -173,7 +173,7 @@ BallsDemo::~BallsDemo() {
 void BallsDemo::initBalls() {
     // Initialize CUDA physics with the VBO
     if (useCuda && vbo != 0) {
-        initCudaPhysics(numBalls, roomSize, minRadius, maxRadius, vbo, &cudaVboResource, bvhBuilder);
+        initCudaPhysics(numBalls, roomSize, minRadius, maxRadius, vbo, &cudaVboResource, bvhBuilder, scene);
     }
 }
 

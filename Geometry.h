@@ -22,3 +22,62 @@ CUDA_CALLABLE inline bool getClosestPointsOnRays(const Ray& ray0, const Ray& ray
     t1 = (a * f - e * c) * det;
     return true;
 }
+
+CUDA_CALLABLE inline Vec3 getClosestPointOnTriangle(
+    const Vec3& p, const Vec3& p0, const Vec3& p1, const Vec3& p2, bool* inside = nullptr)
+{
+    Vec3 e0 = p1 - p0;
+    Vec3 e1 = p2 - p0;
+    Vec3 tmp = p0 - p;
+
+    float a = e0.dot(e0);
+    float b = e0.dot(e1);
+    float c = e1.dot(e1);
+    float d = e0.dot(tmp);
+    float e = e1.dot(tmp);
+    Vec3 coords(b * e - c * d, b * d - a * e, a * c - b * b);
+
+    float x = 0.0f;
+    float y = 0.0f;
+    if (inside)
+    {
+        *inside = false;
+    }
+    if (coords[0] <= 0.0f)
+    {
+        if (c != 0.0f)
+            y = -e / c;
+    }
+    else if (coords[1] <= 0.0f)
+    {
+        if (a != 0.0f)
+            x = -d / a;
+    }
+    else if (coords[0] + coords[1] > coords[2])
+    {
+        float den = a + c - b - b;
+        float num = c + e - b - d;
+        if (den != 0.0f)
+        {
+            x = num / den;
+            y = 1.0f - x;
+        }
+    }
+    else
+    {
+        if (coords[2] != 0.0f)
+        {
+            x = coords[0] / coords[2];
+            y = coords[1] / coords[2];
+        }
+        if (inside)
+        {
+            *inside = true;
+        }
+    }
+
+    x = Clamp(x, 0.0f, 1.0f);
+    y = Clamp(y, 0.0f, 1.0f);
+
+    return Vec3(1.0f - x - y, x, y);
+}

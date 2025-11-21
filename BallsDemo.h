@@ -21,7 +21,7 @@ struct Ball {
 };
 
 // CUDA physics functions (implemented in BallsDemo.cu)
-extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, float maxRadius, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder);
+extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, float maxRadius, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene);
 extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float bounce, float roomSize, cudaGraphicsResource* vboResource, bool useBVH);
 extern "C" void cleanupCudaPhysics(cudaGraphicsResource* vboResource);
 
