@@ -1,9 +1,6 @@
 #include "Mesh.h"
 #include <iostream>
 
-#define TINYGLTF_IMPLEMENTATION
-#define STB_IMAGE_IMPLEMENTATION
-#define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <tiny_gltf.h>
 
 Mesh::Mesh() {
@@ -152,6 +149,16 @@ bool Mesh::load(const std::string& filename) {
             data.normals[i * 3 + 0] = data.transform[0] * nx + data.transform[4] * ny + data.transform[8] * nz;
             data.normals[i * 3 + 1] = data.transform[1] * nx + data.transform[5] * ny + data.transform[9] * nz;
             data.normals[i * 3 + 2] = data.transform[2] * nx + data.transform[6] * ny + data.transform[10] * nz;
+            
+            // Normalize to ensure unit length after transformation
+            float length = sqrtf(data.normals[i * 3 + 0] * data.normals[i * 3 + 0] +
+                                data.normals[i * 3 + 1] * data.normals[i * 3 + 1] +
+                                data.normals[i * 3 + 2] * data.normals[i * 3 + 2]);
+            if (length > 0.0f) {
+                data.normals[i * 3 + 0] /= length;
+                data.normals[i * 3 + 1] /= length;
+                data.normals[i * 3 + 2] /= length;
+            }
         }
     }
     
@@ -227,6 +234,10 @@ bool Mesh::load(const std::string& filename) {
     setupGL();
     
     return true;
+}
+
+void Mesh::setupGLFromData() {
+    setupGL();
 }
 
 void Mesh::setupGL() {

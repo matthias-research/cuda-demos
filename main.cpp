@@ -502,6 +502,7 @@ int main(int argc, char** argv) {
     // Initialize camera
     camera.init();
     camera.resetView();
+    camera.lookAt(camera.pos, Vec3(0.0f, 0.0f, 0.0f));
     camera.speed = 1.0f;
     
     // Create demos

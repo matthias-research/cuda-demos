@@ -4,7 +4,7 @@
 #include "Camera.h"
 #include "Vec.h"
 #include "BVH.h"
-#include "Mesh.h"
+#include "Scene.h"
 #include "Renderer.h"
 #include <GL/glew.h>
 #include <cuda_runtime.h>
@@ -64,10 +64,10 @@ private:
     float lightDirY = 1.0f;
     float lightDirZ = 0.5f;
     
-    // Static mesh rendering
-    Mesh* staticMesh = nullptr;
+    // Static scene rendering
+    Scene* scene = nullptr;
     Renderer* renderer = nullptr;
-    bool showMesh = false;
+    bool showScene = false;
     
     void initBalls();
     void initGL();

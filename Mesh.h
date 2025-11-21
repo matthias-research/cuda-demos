@@ -26,6 +26,9 @@ public:
     // Load mesh from .glb file
     bool load(const std::string& filename);
     
+    // Setup OpenGL buffers from already-populated MeshData (used by Scene)
+    void setupGLFromData();
+    
     // Get mesh data for CUDA access (positions, normals, indices)
     const MeshData& getData() const { return data; }
     

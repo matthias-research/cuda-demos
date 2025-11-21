@@ -142,10 +142,10 @@ BallsDemo::BallsDemo() : vao(0), vbo(0), sphereShader(0), fbo(0), renderTexture(
     renderer = new Renderer();
     renderer->init();
     
-    // Optionally load a static mesh (uncomment when you have a .glb file)
-    staticMesh = new Mesh();
-    if (staticMesh->load("assets/cliff.glb")) {
-        showMesh = true;
+    // Optionally load a static scene (uncomment when you have a .glb file)
+    scene = new Scene();
+    if (scene->load("assets/bunny.glb")) {
+        showScene = true;
     }
     
     initGL();
@@ -159,9 +159,9 @@ BallsDemo::~BallsDemo() {
     if (bvhBuilder) {
         delete bvhBuilder;
     }
-    if (staticMesh) {
-        staticMesh->cleanup();
-        delete staticMesh;
+    if (scene) {
+        scene->cleanup();
+        delete scene;
     }
     if (renderer) {
         renderer->cleanup();
@@ -383,8 +383,8 @@ void BallsDemo::render(uchar4* d_out, int width, int height) {
     glDrawArrays(GL_POINTS, 0, numBalls);
     glBindVertexArray(0);
     
-    // Render static mesh after balls (for proper depth testing)
-    if (showMesh && staticMesh && renderer) {
+    // Render static scene after balls (for proper depth testing)
+    if (showScene && scene && renderer) {
         // Sync light direction (normalized, same as balls)
         Vec3 lightDirection = Vec3(lightDirX, lightDirY, lightDirZ);
         lightDirection.normalize();
@@ -395,8 +395,11 @@ void BallsDemo::render(uchar4* d_out, int width, int height) {
         // Disable backface culling to see both sides
         glDisable(GL_CULL_FACE);
         
-        // Vertices are already transformed, so pass identity matrix to renderer
-        renderer->renderMesh(*staticMesh, camera, width, height, 1.0f, nullptr);
+        // Render all meshes in the scene
+        for (const Mesh* mesh : scene->getMeshes()) {
+            // Vertices are already transformed, so pass identity matrix to renderer
+            renderer->renderMesh(*mesh, camera, width, height, 1.0f, nullptr);
+        }
     }
     
     glDisable(GL_DEPTH_TEST);
@@ -471,9 +474,10 @@ void BallsDemo::renderUI() {
     ImGui::SliderFloat("Light Dir Z##balls", &lightDirZ, -1.0f, 1.0f);
     
     ImGui::Separator();
-    ImGui::Text("Static Mesh:");
-    if (staticMesh) {
-        ImGui::Checkbox("Show Mesh##balls", &showMesh);
+    ImGui::Text("Static Scene:");
+    if (scene) {
+        ImGui::Text("  Meshes loaded: %zu", scene->getMeshCount());
+        ImGui::Checkbox("Show Scene##balls", &showScene);
         if (renderer) {
             ImGui::SliderFloat("Mesh Ambient##balls", &renderer->getMaterial().ambientStrength, 0.0f, 1.0f);
             ImGui::SliderFloat("Mesh Specular##balls", &renderer->getMaterial().specularStrength, 0.0f, 2.0f);

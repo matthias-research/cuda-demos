@@ -19,10 +19,10 @@ uniform mat4 projection;
 
 void main()
 {
-    FragPos = vec3(model * vec4(aPos, 1.0));
-    Normal = mat3(transpose(inverse(model))) * aNormal;
+    FragPos = aPos;  // Use untransformed position since vertices are already in world space
+    Normal = aNormal;  // Normals already transformed in mesh loading
     TexCoord = aTexCoord;
-    gl_Position = projection * view * vec4(FragPos, 1.0);
+    gl_Position = projection * view * model * vec4(aPos, 1.0);
 }
 )";
 
@@ -38,7 +38,7 @@ in vec2 TexCoord;
 uniform sampler2D textureSampler;
 uniform bool hasTexture;
 
-uniform vec3 lightPos;
+uniform vec3 lightDir;
 uniform vec3 viewPos;
 uniform float ambientStrength;
 uniform float specularStrength;
@@ -55,14 +55,14 @@ void main()
     // Ambient
     vec3 ambient = ambientStrength * baseColor;
     
-    // Diffuse
-    vec3 lightDir = normalize(lightPos - FragPos);
-    float diff = max(dot(norm, lightDir), 0.0);
+    // Diffuse (directional light)
+    vec3 lightDirection = normalize(lightDir);
+    float diff = max(dot(norm, lightDirection), 0.0);
     vec3 diffuse = diff * baseColor;
     
     // Specular
     vec3 viewDir = normalize(viewPos - FragPos);
-    vec3 reflectDir = reflect(-lightDir, norm);
+    vec3 reflectDir = reflect(-lightDirection, norm);
     float spec = pow(max(dot(viewDir, reflectDir), 0.0), shininess);
     vec3 specular = specularStrength * spec * vec3(1.0);
     
@@ -244,13 +244,13 @@ void Renderer::renderMesh(const Mesh& mesh, Camera* camera, int width, int heigh
     
     // Set lighting uniforms
     Vec3 camPos = camera->pos;
-    GLint lightPosLoc = glGetUniformLocation(shaderProgram, "lightPos");
+    GLint lightDirLoc = glGetUniformLocation(shaderProgram, "lightDir");
     GLint viewPosLoc = glGetUniformLocation(shaderProgram, "viewPos");
     GLint ambientLoc = glGetUniformLocation(shaderProgram, "ambientStrength");
     GLint specularLoc = glGetUniformLocation(shaderProgram, "specularStrength");
     GLint shininessLoc = glGetUniformLocation(shaderProgram, "shininess");
     
-    glUniform3f(lightPosLoc, light.x, light.y, light.z);
+    glUniform3f(lightDirLoc, light.x, light.y, light.z);
     glUniform3f(viewPosLoc, camPos.x, camPos.y, camPos.z);
     glUniform1f(ambientLoc, material.ambientStrength);
     glUniform1f(specularLoc, material.specularStrength);

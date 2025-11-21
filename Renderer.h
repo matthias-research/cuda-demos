@@ -17,8 +17,8 @@ public:
     
     // Material properties
     struct Material {
-        float ambientStrength = 0.5f;  // Increased for better visibility
-        float specularStrength = 0.5f;
+        float ambientStrength = 0.2f; 
+        float specularStrength = 0.3f;
         float shininess = 32.0f;
     };
     
