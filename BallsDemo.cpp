@@ -93,14 +93,21 @@ void main()
     // Rotate normal by quaternion
     vec3 rotNormal = qtransform(quat, normal);
     
-    // Create stripe pattern based on rotated normal
-    float angle = atan(rotNormal.y, rotNormal.x);
-    int segment = int((angle + PI) / PI * 6.0);
+    // Create classic beach ball pattern with 6 colored segments
+    float angle = atan(rotNormal.z, rotNormal.x);
+    int segment = int((angle + PI) / (PI * 2.0) * 6.0);
+    segment = segment % 6;
     
-    vec3 color = sphereColor;
-    if (segment % 2 == 0) {
-        color = vec3(1.0, 1.0, 1.0) - color;
-    }
+    // Define beach ball colors
+    vec3 colors[6];
+    colors[0] = vec3(1.0, 0.2, 0.2);   // Red
+    colors[1] = vec3(0.95, 0.5, 0.1);  // Orange
+    colors[2] = vec3(0.95, 0.95, 0.2); // Yellow
+    colors[3] = vec3(0.2, 1.0, 0.2); // Green
+    colors[4] = vec3(0.1, 0.1, 1.0);  // Blue  
+    colors[5] = vec3(1.0, 1.0, 1.0); // White
+    
+    vec3 color = colors[segment];
     
     // Phong lighting (directional light)
     float diffuse = max(0.0, dot(lightDir, normal));
