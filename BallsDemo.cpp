@@ -36,7 +36,7 @@ void main()
     eyePos = eyeSpacePos.xyz;
     quat = aQuat;
     
-    // Calculate point size based on distance
+    // Calculate point size based on radius and distance
     float dist = length(eyeSpacePos.xyz);
     gl_PointSize = aRadius * (pointScale / dist);
 }
@@ -66,9 +66,6 @@ vec3 qtransform(vec4 q, vec3 v)
 
 void main()
 {
-    // Calculate ray direction in view space
-    vec3 viewDir = normalize(viewPos - fragPos);
-    
     // Calculate sphere normal from point coordinate
     vec2 coord = gl_PointCoord * 2.0 - 1.0;
     coord.y = -coord.y;  // Flip Y axis (gl_PointCoord Y is inverted)
@@ -82,6 +79,7 @@ void main()
     float h = sqrt(1.0 - r2);
     
     // Build tangent space (billboard aligned to view)
+    vec3 viewDir = normalize(viewPos - fragPos);
     vec3 a0 = normalize(fragPos - viewPos);
     vec3 a2 = vec3(0.0, 1.0, 0.0);
     vec3 a1 = normalize(cross(a0, a2));
