@@ -30,7 +30,7 @@ struct BallsDeviceData {
         ballBoundsLowers.free();
         ballBoundsUppers.free();
         posCorr.free();
-        angVelCorr.free();
+        newAngVel.free();
         meshVertices.free();
         meshTriIds.free();
         meshTriBoundsLower.free();
@@ -53,7 +53,7 @@ struct BallsDeviceData {
         s += ballBoundsLowers.allocationSize();
         s += ballBoundsUppers.allocationSize();
         s += posCorr.allocationSize();
-        s += angVelCorr.allocationSize();
+        s += newAngVel.allocationSize();
         s += meshVertices.allocationSize();
         s += meshTriIds.allocationSize();
         s += meshTriBoundsLower.allocationSize();
@@ -95,7 +95,7 @@ struct BallsDeviceData {
     
     // Collision correction buffers (for symmetric resolution)
     DeviceBuffer<Vec3> posCorr;       // Position corrections
-    DeviceBuffer<Vec3> angVelCorr;    // Angular velocity corrections
+    DeviceBuffer<Vec4> newAngVel;     // New angular velocity accumulation (x,y,z = sum, w = count)
     
     // VBO data (mapped from OpenGL)
     float* vboData = nullptr;      // Interleaved: pos(3), radius(1), color(3), quat(4), pad(3) = 14 floats
@@ -265,6 +265,28 @@ __device__ inline void handleBallCollision(
         atomicAdd(&data.posCorr[otherIdx].x, separation.x);
         atomicAdd(&data.posCorr[otherIdx].y, separation.y);
         atomicAdd(&data.posCorr[otherIdx].z, separation.z);
+        
+        // Calculate angular velocity for ball collisions using tangential relative velocity
+        Vec3 relativeVel = data.vel[otherIdx] - data.vel[idx];
+        
+        // Extract tangential component: v_tangential = v_rel - (v_rel · n) * n
+        Vec3 tangentialRelVel = relativeVel - normal * normal.dot(relativeVel);
+        
+        // No-slip condition for ball collision: ω = (v_tangential × n) / r
+        // Each ball gets angular velocity based on its own radius
+        Vec3 angVelContrib1 = tangentialRelVel.cross(normal) / radius;
+        Vec3 angVelContrib2 = tangentialRelVel.cross(-normal) / otherRadius;
+        
+        // Accumulate angular velocity contributions atomically
+        atomicAdd(&data.newAngVel[idx].x, angVelContrib1.x);
+        atomicAdd(&data.newAngVel[idx].y, angVelContrib1.y);
+        atomicAdd(&data.newAngVel[idx].z, angVelContrib1.z);
+        atomicAdd(&data.newAngVel[idx].w, 1.0f);  // Increment collision count
+        
+        atomicAdd(&data.newAngVel[otherIdx].x, angVelContrib2.x);
+        atomicAdd(&data.newAngVel[otherIdx].y, angVelContrib2.y);
+        atomicAdd(&data.newAngVel[otherIdx].z, angVelContrib2.z);
+        atomicAdd(&data.newAngVel[otherIdx].w, 1.0f);  // Increment collision count
     }
 }
 
@@ -314,7 +336,7 @@ __global__ void kernel_ballCollision(BallsDeviceData data, float bounce) {
 }
 
 // Kernel 5: Wall collision (generalized for arbitrary planes)
-__global__ void kernel_wallCollision(BallsDeviceData data, float roomSize, float bounce) {
+__global__ void kernel_wallCollision(BallsDeviceData data, float roomSize, float bounce, bool updateAngularVel) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
     
@@ -346,6 +368,15 @@ __global__ void kernel_wallCollision(BallsDeviceData data, float roomSize, float
         if (penetration > 0) {
             // Position correction: push ball back inside the room (in direction of inward normal)
             pos += wall.n * penetration;
+            
+            // Update angular velocity for no-slip condition (only on first substep)
+            if (updateAngularVel) {
+                // No-slip: ω = (v × n) / r
+                // Where v is linear velocity, n is wall normal, r is radius
+                Vec3 tangentialVel = data.vel[idx] - wall.n * wall.n.dot(data.vel[idx]);
+                Vec3 newAngVel = tangentialVel.cross(wall.n) / radius;
+                data.angVel[idx] = newAngVel;
+            }
         }
     }
     
@@ -415,7 +446,7 @@ __global__ void kernel_ballCollision_BVH(BallsDeviceData data, float bounce) {
 }
 
 // Kernel: Ball-mesh collision using BVH
-__global__ void kernel_ballMeshCollision(BallsDeviceData data, float searchRadius) {
+__global__ void kernel_ballMeshCollision(BallsDeviceData data, float searchRadius, bool updateAngularVel) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
     
@@ -529,11 +560,29 @@ __global__ void kernel_ballMeshCollision(BallsDeviceData data, float searchRadiu
                     // Collision: push ball out along direction
                     float penetration = radius - dist;
                     ballPos += direction * penetration;
+                    
+                    // Update angular velocity for no-slip condition (only on first substep)
+                    if (updateAngularVel) {
+                        // No-slip: ω = (v × n) / r
+                        // Use triangle normal for surface contact
+                        Vec3 tangentialVel = data.vel[idx] - triNormal * triNormal.dot(data.vel[idx]);
+                        Vec3 newAngVel = tangentialVel.cross(triNormal) / radius;
+                        data.angVel[idx] = newAngVel;
+                    }
                 }
             } else {
                 // Ball is inside the mesh - push it out
                 float penetration = dist + radius;
                 ballPos += -direction * penetration;  // Go against direction to exit
+                
+                // Update angular velocity for no-slip condition (only on first substep)
+                if (updateAngularVel) {
+                    // No-slip: ω = (v × n) / r
+                    // Use triangle normal for surface contact
+                    Vec3 tangentialVel = data.vel[idx] - triNormal * triNormal.dot(data.vel[idx]);
+                    Vec3 newAngVel = tangentialVel.cross(triNormal) / radius;
+                    data.angVel[idx] = newAngVel;
+                }
             }
             
             // Write corrected position back to VBO
@@ -555,7 +604,16 @@ __global__ void kernel_applyCorrections(BallsDeviceData data, float relaxation) 
     
     // Apply position corrections with relaxation factor
     pos += data.posCorr[idx] * relaxation;
-    data.angVel[idx] += data.angVelCorr[idx] * relaxation;
+    
+    // Apply angular velocity corrections with averaging
+    Vec4 angVelAccum = data.newAngVel[idx];
+    if (angVelAccum.w > 0.0f) {  // If there were collisions
+        // Average the accumulated angular velocity
+        Vec3 avgAngVel(angVelAccum.x / angVelAccum.w, 
+                       angVelAccum.y / angVelAccum.w, 
+                       angVelAccum.z / angVelAccum.w);
+        data.angVel[idx] = avgAngVel;
+    }
     
     // Write position back to VBO
     ballData[0] = pos.x;
@@ -588,7 +646,7 @@ __global__ void kernel_integrateQuaternions(BallsDeviceData data, float dt) {
     
     // Integrate rotation
     Vec3 omega = data.angVel[idx] * dt;
-//    quat = quat.rotateLinear(quat, omega);
+    quat = quat.rotateLinear(quat, omega);
     
     // Write back
     ballData[7] = quat.w;
@@ -668,10 +726,10 @@ __global__ void kernel_initBalls(BallsDeviceData data, float roomSize, float min
     data.vel[idx].y = -2.0f + FRAND() * 4.0f;
     data.vel[idx].z = -2.0f + FRAND() * 4.0f;
     
-    // Random angular velocity
-    data.angVel[idx].x = -3.0f + FRAND() * 6.0f;
-    data.angVel[idx].y = -3.0f + FRAND() * 6.0f;
-    data.angVel[idx].z = -3.0f + FRAND() * 6.0f;
+    // Zero initial angular velocity (will be set by collisions)
+    data.angVel[idx].x = 0.0f;
+    data.angVel[idx].y = 0.0f;
+    data.angVel[idx].z = 0.0f;
     
     // Store radius
     data.radii[idx] = ballData[3];
@@ -710,7 +768,7 @@ extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, f
     
     // Allocate collision correction buffers
     g_deviceData.posCorr.resize(numBalls, false);
-    g_deviceData.angVelCorr.resize(numBalls, false);
+    g_deviceData.newAngVel.resize(numBalls, false);
     
     // Initialize memory
     g_deviceData.vel.setZero();
@@ -910,7 +968,7 @@ extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float 
 
         // Zero correction buffers before collision detection
         g_deviceData.posCorr.setZero();
-        g_deviceData.angVelCorr.setZero();
+        g_deviceData.newAngVel.setZero();
 
         if (useBVH) {
             // BVH-based collision (accumulates corrections)
@@ -925,12 +983,12 @@ extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float 
         const float relaxation = 0.3f;
         kernel_applyCorrections << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, relaxation);
 
-        kernel_wallCollision << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, roomSize, bounce);
+        kernel_wallCollision << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, roomSize, bounce, subStep == 0);
 
         // Ball-mesh collision
         if (g_deviceData.numMeshTriangles > 0) {
             float meshSearchRadius = 1.0f * g_deviceData.maxRadius;  // Search radius for mesh collisions
-            kernel_ballMeshCollision << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, meshSearchRadius);
+            kernel_ballMeshCollision << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, meshSearchRadius, subStep == 0);
         }
 
         // Derive velocity from position change (PBD)
