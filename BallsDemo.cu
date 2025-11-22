@@ -598,7 +598,7 @@ __global__ void kernel_integrateQuaternions(BallsDeviceData data, float dt) {
 }
 
 // Initialization kernel - sets up balls on a grid
-__global__ void kernel_initBalls(BallsDeviceData data, float roomSize, float minRadius, float maxRadius, 
+__global__ void kernel_initBalls(BallsDeviceData data, float roomSize, float minRadius, float maxRadius, float minHeight,
                                   int ballsPerLayer, int ballsPerRow, float gridSpacing, unsigned long seed) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
@@ -625,7 +625,7 @@ __global__ void kernel_initBalls(BallsDeviceData data, float roomSize, float min
     float halfRoom = roomSize * 0.5f;
     ballData[0] = -halfRoom + gridSpacing + col * gridSpacing;  // x
     ballData[2] = -halfRoom + gridSpacing + row * gridSpacing;  // z
-    ballData[1] = maxRadius + layer * gridSpacing;              // y (start from floor + radius)
+    ballData[1] = minHeight + layer * gridSpacing;              // y (start from minHeight)
     
     // Random radius
     ballData[3] = minRadius + FRAND() * (maxRadius - minRadius);
@@ -683,7 +683,7 @@ __global__ void kernel_initBalls(BallsDeviceData data, float roomSize, float min
 
 static BVHBuilder* g_bvhBuilder = nullptr;
 
-extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, float maxRadius, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene) {
+extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, float maxRadius, float minHeight, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene) {
     g_deviceData.numBalls = numBalls;
     g_deviceData.worldOrig = -100.0f;
     g_bvhBuilder = bvhBuilder;
@@ -743,7 +743,7 @@ extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, f
     printf("Launching kernel_initBalls with %d blocks, %d threads per block, %d total balls\n", numBlocks, THREADS_PER_BLOCK, numBalls);
     printf("Grid layout: %d balls per row, %d balls per layer, spacing: %.2f\n", ballsPerRow, ballsPerLayer, gridSpacing);
     
-    kernel_initBalls<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, roomSize, minRadius, maxRadius, 
+    kernel_initBalls<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, roomSize, minRadius, maxRadius, minHeight,
                                                         ballsPerLayer, ballsPerRow, gridSpacing, time(nullptr));
     
     // Check for kernel launch errors
@@ -813,15 +813,10 @@ extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, f
                 triangleOffset += numTris;
             }
             
-            // Upload to GPU
-            g_deviceData.meshVertices.resize(totalVertices, false);
-            g_deviceData.meshTriIds.resize(totalTriangles * 3, false);
+            // Upload to GPU using DeviceBuffer::set (combines resize + memcpy)
+            g_deviceData.meshVertices.set(hostVertices);
+            g_deviceData.meshTriIds.set(hostTriIds);
             g_deviceData.numMeshTriangles = totalTriangles;
-            
-            cudaMemcpy(g_deviceData.meshVertices.buffer, hostVertices.data(), 
-                      totalVertices * sizeof(Vec3), cudaMemcpyHostToDevice);
-            cudaMemcpy(g_deviceData.meshTriIds.buffer, hostTriIds.data(), 
-                      totalTriangles * 3 * sizeof(int), cudaMemcpyHostToDevice);
             
             // Allocate triangle bounds buffers
             g_deviceData.meshTriBoundsLower.resize(totalTriangles, false);
@@ -934,7 +929,7 @@ extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float 
 
         // Ball-mesh collision
         if (g_deviceData.numMeshTriangles > 0) {
-            float meshSearchRadius = 2.0f * g_deviceData.maxRadius;  // Search radius for mesh collisions
+            float meshSearchRadius = 1.0f * g_deviceData.maxRadius;  // Search radius for mesh collisions
             kernel_ballMeshCollision << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, meshSearchRadius);
         }
 

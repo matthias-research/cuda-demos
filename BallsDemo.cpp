@@ -171,7 +171,7 @@ BallsDemo::~BallsDemo() {
 void BallsDemo::initBalls() {
     // Initialize CUDA physics with the VBO
     if (useCuda && vbo != 0) {
-        initCudaPhysics(numBalls, roomSize, minRadius, maxRadius, vbo, &cudaVboResource, bvhBuilder, scene);
+        initCudaPhysics(numBalls, roomSize, minRadius, maxRadius, minHeight, vbo, &cudaVboResource, bvhBuilder, scene);
     }
 }
 
@@ -453,6 +453,7 @@ void BallsDemo::renderUI() {
     ImGui::SliderFloat("Bounce##balls", &bounce, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat("Friction##balls", &friction, 0.8f, 1.0f, "%.3f");
     ImGui::SliderFloat("Room Size##balls", &roomSize, 5.0f, 30.0f, "%.1f");
+    ImGui::SliderFloat("Min Height##balls", &minHeight, 0.0f, 5.0f, "%.1f");
     
     ImGui::Separator();
     ImGui::Text("Collision Detection Method:");
@@ -526,6 +527,7 @@ void BallsDemo::reset() {
     bounce = 0.85f;
     friction = 0.99f;
     roomSize = 20.0f;
+    minHeight = 1.0f;
     lightDirX = 0.3f;
     lightDirY = 1.0f;
     lightDirZ = 0.5f;

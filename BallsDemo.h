@@ -21,7 +21,7 @@ struct Ball {
 };
 
 // CUDA physics functions (implemented in BallsDemo.cu)
-extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, float maxRadius, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene);
+extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, float maxRadius, float minHeight, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene);
 extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float bounce, float roomSize, cudaGraphicsResource* vboResource, bool useBVH);
 extern "C" void cleanupCudaPhysics(cudaGraphicsResource* vboResource);
 
@@ -35,6 +35,7 @@ private:
     // Ball size parameters
     float minRadius = 0.2f;
     float maxRadius = 0.4f;
+    float minHeight = 10.0f;  // Minimum height for ball creation
     
     // Simulation bounds
     float roomSize = 30.0f;  // Double size room for more balls
