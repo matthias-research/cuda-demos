@@ -42,9 +42,10 @@ private:
     
     // OpenGL resources
     GLuint vao, vbo;
-    GLuint sphereShader;
-    GLuint fbo, renderTexture;
-    int fbWidth, fbHeight;
+    GLuint ballShader;
+    GLuint ballShadowShader;
+    GLuint shadowFBO, shadowTexture;
+    int shadowWidth, shadowHeight;
     
     // CUDA resources
     cudaGraphicsResource* cudaVboResource = nullptr;
@@ -71,7 +72,8 @@ private:
     void initBalls();
     void initGL();
     void initShaders();
-    void initFramebuffer(int width, int height);
+    void initShadowBuffer(int width, int height);
+    void renderShadows(int width, int height);
     void cleanupGL();
 
 public:

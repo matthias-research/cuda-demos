@@ -6,8 +6,8 @@
 #include <cstdlib>
 #include <ctime>
 
-// Simplified sphere shader using point sprites
-const char* sphereVertexShader = R"(
+// Ball shader using point sprites
+const char* ballVertexShader = R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in float aRadius;
@@ -21,7 +21,6 @@ uniform float pointScale;
 
 out vec3 fragPos;
 out float radius;
-out vec3 sphereColor;
 out vec3 eyePos;
 out vec4 quat;
 out vec3 viewRight;
@@ -34,7 +33,6 @@ void main()
     
     fragPos = aPos;
     radius = aRadius;
-    sphereColor = aColor;
     eyePos = eyeSpacePos.xyz;
     quat = aQuat;
     
@@ -48,7 +46,7 @@ void main()
 }
 )";
 
-const char* sphereFragmentShader = R"(
+const char* ballFragmentShader = R"(
 #version 330 core
 
 const float PI = 3.14159265359;
@@ -58,7 +56,6 @@ uniform vec3 lightDir;
 
 in vec3 fragPos;
 in float radius;
-in vec3 sphereColor;
 in vec3 eyePos;
 in vec4 quat;
 in vec3 viewRight;
@@ -74,16 +71,16 @@ vec3 qtransform(vec4 q, vec3 v)
 
 void main()
 {
-    // Calculate sphere normal from point coordinate
+    // Calculate ball normal from point coordinate
     vec2 coord = gl_PointCoord * 2.0 - 1.0;
     coord.y = -coord.y;  // Flip Y axis (gl_PointCoord Y is inverted)
     float r2 = dot(coord, coord);
     
-    // Discard fragments outside sphere
+    // Discard fragments outside ball
     if (r2 > 1.0)
         discard;
     
-    // Calculate 3D position on sphere surface
+    // Calculate 3D position on ball surface
     float h = sqrt(1.0 - r2);
     
     // Use view matrix axes directly (robust for all camera orientations)
@@ -129,6 +126,46 @@ void main()
 }
 )";
 
+// Ball shader using point sprites
+const char* ballShadowVertexShader = R"(
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in float aRadius;
+
+uniform mat4 projectionMat;
+uniform mat4 viewMat;
+uniform float pointScale;
+
+void main()
+{
+    vec4 eyeSpacePos = viewMat * vec4(aPos, 1.0);
+    gl_Position = projectionMat * eyeSpacePos;
+    
+    float dist = length(eyeSpacePos.xyz);
+    gl_PointSize = aRadius * (pointScale / dist);
+}
+)";
+
+const char* ballShadowFragmentShader = R"(
+#version 330 core
+
+out vec4 fragColor;
+
+void main()
+{
+    // Draw simple solid ball for shadow map
+    vec2 coord = gl_PointCoord * 2.0 - 1.0;
+    float r2 = dot(coord, coord);
+    
+    // Discard fragments outside ball
+    if (r2 > 1.0)
+        discard;
+    
+    fragColor = vec4(1.0, 1.0, 1.0, 1.0);
+}
+)";
+
+
 // Helper function to compile shader
 static GLuint compileShader(GLenum type, const char* source) {
     GLuint shader = glCreateShader(type);
@@ -146,8 +183,8 @@ static GLuint compileShader(GLenum type, const char* source) {
     return shader;
 }
 
-BallsDemo::BallsDemo() : vao(0), vbo(0), sphereShader(0), fbo(0), renderTexture(0),
-                         fbWidth(0), fbHeight(0) {
+BallsDemo::BallsDemo() : vao(0), vbo(0), ballShader(0), ballShadowShader(0), 
+                         shadowFBO(0), shadowTexture(0), shadowWidth(0), shadowHeight(0) {
     bvhBuilder = new BVHBuilder();
     
     // Initialize mesh renderer
@@ -221,50 +258,68 @@ void BallsDemo::initGL() {
 }
 
 void BallsDemo::initShaders() {
-    GLuint vertexShader = compileShader(GL_VERTEX_SHADER, sphereVertexShader);
-    GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, sphereFragmentShader);
-    
-    sphereShader = glCreateProgram();
-    glAttachShader(sphereShader, vertexShader);
-    glAttachShader(sphereShader, fragmentShader);
-    glLinkProgram(sphereShader);
-    
-    GLint success;
-    glGetProgramiv(sphereShader, GL_LINK_STATUS, &success);
-    if (!success) {
-        char infoLog[512];
-        glGetProgramInfoLog(sphereShader, 512, nullptr, infoLog);
-        std::cerr << "Shader linking failed:\n" << infoLog << std::endl;
+    for (int i = 0; i < 2; i++) {
+
+        GLuint vertexShader = i == 0 ? compileShader(GL_VERTEX_SHADER, ballVertexShader) : 
+            compileShader(GL_VERTEX_SHADER, ballShadowVertexShader);
+        GLuint fragmentShader = i == 0 ? compileShader(GL_FRAGMENT_SHADER, ballFragmentShader) : 
+            compileShader(GL_FRAGMENT_SHADER, ballShadowFragmentShader);
+
+        GLuint& shader = i == 0 ? ballShader : ballShadowShader;
+        shader = glCreateProgram();
+        glAttachShader(shader, vertexShader);
+        glAttachShader(shader, fragmentShader);
+        glLinkProgram(shader);
+        
+        GLint success;
+        glGetProgramiv(shader, GL_LINK_STATUS, &success);
+        if (!success) {
+            char infoLog[512];
+            glGetProgramInfoLog(shader, 512, nullptr, infoLog);
+            std::cerr << "Shader linking failed:\n" << infoLog << std::endl;
+        }
+        
+        glDeleteShader(vertexShader);
+        glDeleteShader(fragmentShader);
     }
-    
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
 }
 
-void BallsDemo::initFramebuffer(int width, int height) {
-    if (fbo != 0 && fbWidth == width && fbHeight == height) {
+void BallsDemo::cleanupGL() {
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (ballShader) glDeleteProgram(ballShader);
+    if (ballShadowShader) glDeleteProgram(ballShadowShader);
+    if (shadowFBO) glDeleteFramebuffers(1, &shadowFBO);
+    if (shadowTexture) glDeleteTextures(1, &shadowTexture);
+}
+
+void BallsDemo::initShadowBuffer(int width, int height) {
+    if (shadowFBO != 0 && shadowWidth == width && shadowHeight == height) {
         return;
     }
     
-    if (fbo != 0) {
-        glDeleteFramebuffers(1, &fbo);
-        glDeleteTextures(1, &renderTexture);
+    if (shadowFBO != 0) {
+        glDeleteFramebuffers(1, &shadowFBO);
+        glDeleteTextures(1, &shadowTexture);
     }
     
-    fbWidth = width;
-    fbHeight = height;
+    shadowWidth = width;
+    shadowHeight = height;
     
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    // Create FBO
+    glGenFramebuffers(1, &shadowFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO);
     
-    glGenTextures(1, &renderTexture);
-    glBindTexture(GL_TEXTURE_2D, renderTexture);
+    // Create color texture
+    glGenTextures(1, &shadowTexture);
+    glBindTexture(GL_TEXTURE_2D, shadowTexture);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, renderTexture, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, shadowTexture, 0);
     
+    // Create depth renderbuffer
     GLuint rbo;
     glGenRenderbuffers(1, &rbo);
     glBindRenderbuffer(GL_RENDERBUFFER, rbo);
@@ -272,18 +327,84 @@ void BallsDemo::initFramebuffer(int width, int height) {
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rbo);
     
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        std::cerr << "Framebuffer is not complete!" << std::endl;
+        std::cerr << "Shadow framebuffer is not complete!" << std::endl;
     }
     
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-void BallsDemo::cleanupGL() {
-    if (vao) glDeleteVertexArrays(1, &vao);
-    if (vbo) glDeleteBuffers(1, &vbo);
-    if (sphereShader) glDeleteProgram(sphereShader);
-    if (fbo) glDeleteFramebuffers(1, &fbo);
-    if (renderTexture) glDeleteTextures(1, &renderTexture);
+void BallsDemo::renderShadows(int width, int height) {
+    if (!camera) return;
+    
+    initShadowBuffer(width, height);
+    
+    // Render to shadow FBO from light's perspective (directional light)
+    glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO);
+    glViewport(0, 0, width, height);
+    
+    glEnable(GL_DEPTH_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    
+    // Enable point sprites
+    glEnable(GL_PROGRAM_POINT_SIZE);
+    glEnable(GL_POINT_SPRITE);
+    
+    glUseProgram(ballShadowShader);
+    
+    // Set up matrices from light's perspective
+    float view[16], projection[16];
+    
+    // Normalize light direction (pointing FROM light TO scene)
+    Vec3 lightDirection = lightDir;
+    lightDirection.normalize();
+    
+    // Position light far away along the light direction
+    Vec3 lightPos = -lightDirection * (roomSize * 2.0f);  // Position light outside the scene
+    Vec3 target(0.0f, 0.0f, 0.0f);  // Look at scene center
+    
+    // Build view matrix from light's perspective
+    Vec3 forward = (target - lightPos).normalized();
+    Vec3 right = Vec3(0, 1, 0).cross(forward).normalized();
+    Vec3 up = forward.cross(right);
+    
+    view[0] = right.x;    view[4] = right.y;    view[8] = right.z;     view[12] = -right.dot(lightPos);
+    view[1] = up.x;       view[5] = up.y;       view[9] = up.z;        view[13] = -up.dot(lightPos);
+    view[2] = -forward.x; view[6] = -forward.y; view[10] = -forward.z; view[14] = forward.dot(lightPos);
+    view[3] = 0;          view[7] = 0;          view[11] = 0;          view[15] = 1;
+    
+    // Orthographic projection (parallel rays for directional light)
+    float halfSize = roomSize * 0.6f;  // Cover the room area
+    float near = 0.1f;
+    float far = roomSize * 4.0f;  // Ensure we capture all objects
+    
+    for (int i = 0; i < 16; i++) projection[i] = 0.0f;
+    projection[0] = 1.0f / halfSize;           // Right
+    projection[5] = 1.0f / halfSize;           // Top
+    projection[10] = -2.0f / (far - near);     // Far/near
+    projection[14] = -(far + near) / (far - near);
+    projection[15] = 1.0f;
+    
+    // Set uniforms for shadow shader
+    GLint projLoc = glGetUniformLocation(ballShadowShader, "projectionMat");
+    GLint viewLoc = glGetUniformLocation(ballShadowShader, "viewMat");
+    GLint pointScaleLoc = glGetUniformLocation(ballShadowShader, "pointScale");
+    
+    glUniformMatrix4fv(projLoc, 1, GL_FALSE, projection);
+    glUniformMatrix4fv(viewLoc, 1, GL_FALSE, view);
+    // For orthographic projection, point size = radius * 2 * projection scale * viewport height
+    // projection[0] = 1/halfSize, so we scale by halfSize * height to get pixel size
+    glUniform1f(pointScaleLoc, (1.0f / projection[0]) * height);
+    
+    // Draw all balls as flat white discs
+    glBindVertexArray(vao);
+    glDrawArrays(GL_POINTS, 0, numBalls);
+    glBindVertexArray(0);
+    
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_POINT_SPRITE);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
 }
 
 void BallsDemo::update(float deltaTime) {
@@ -312,124 +433,11 @@ bool BallsDemo::raycast(const Vec3& orig, const Vec3& dir, float& t) {
 }
 
 void BallsDemo::render(uchar4* d_out, int width, int height) {
-    if (!camera) return;
-    
-    initFramebuffer(width, height);
-    
-    // Render to framebuffer
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glViewport(0, 0, width, height);
-    
-    glEnable(GL_DEPTH_TEST);
-    glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    
-    // Enable point sprites
-    glEnable(GL_PROGRAM_POINT_SIZE);
-    glEnable(GL_POINT_SPRITE);
-    
-    glUseProgram(sphereShader);
-    
-    // Set up matrices
-    float model[16], view[16], projection[16];
-    for (int i = 0; i < 16; i++) model[i] = 0.0f;
-    model[0] = model[5] = model[10] = model[15] = 1.0f;
-    
-    Vec3 camPos = camera->pos;
-    Vec3 camTarget = camera->pos + camera->forward;
-    
-    // View matrix
-    float fX = camTarget.x - camPos.x;
-    float fY = camTarget.y - camPos.y;
-    float fZ = camTarget.z - camPos.z;
-    float len = sqrt(fX*fX + fY*fY + fZ*fZ);
-    fX /= len; fY /= len; fZ /= len;
-    
-    float upX = camera->up.x, upY = camera->up.y, upZ = camera->up.z;
-    float sX = fY * upZ - fZ * upY;
-    float sY = fZ * upX - fX * upZ;
-    float sZ = fX * upY - fY * upX;
-    len = sqrt(sX*sX + sY*sY + sZ*sZ);
-    sX /= len; sY /= len; sZ /= len;
-    
-    float uX = sY * fZ - sZ * fY;
-    float uY = sZ * fX - sX * fZ;
-    float uZ = sX * fY - sY * fX;
-    
-    view[0] = sX;  view[4] = sY;  view[8] = sZ;   view[12] = -(sX*camPos.x + sY*camPos.y + sZ*camPos.z);
-    view[1] = uX;  view[5] = uY;  view[9] = uZ;   view[13] = -(uX*camPos.x + uY*camPos.y + uZ*camPos.z);
-    view[2] = -fX; view[6] = -fY; view[10] = -fZ; view[14] = (fX*camPos.x + fY*camPos.y + fZ*camPos.z);
-    view[3] = 0;   view[7] = 0;   view[11] = 0;   view[15] = 1;
-    
-    // Projection matrix
-    float fov = camera->fov * 3.14159f / 180.0f;
-    float aspect = (float)width / height;
-    float near = 0.1f, far = 1000.0f;  // Increased far plane for large meshes
-    for (int i = 0; i < 16; i++) projection[i] = 0.0f;
-    float f = 1.0f / tan(fov * 0.5f);
-    projection[0] = f / aspect;
-    projection[5] = f;
-    projection[10] = (far + near) / (near - far);
-    projection[11] = -1.0f;
-    projection[14] = (2.0f * far * near) / (near - far);
-    
-    // Set uniforms
-    GLint projLoc = glGetUniformLocation(sphereShader, "projectionMat");
-    GLint viewLoc = glGetUniformLocation(sphereShader, "viewMat");
-    GLint viewPosLoc = glGetUniformLocation(sphereShader, "viewPos");
-    GLint lightDirLoc = glGetUniformLocation(sphereShader, "lightDir");
-    GLint pointScaleLoc = glGetUniformLocation(sphereShader, "pointScale");
-    
-    glUniformMatrix4fv(projLoc, 1, GL_FALSE, projection);
-    glUniformMatrix4fv(viewLoc, 1, GL_FALSE, view);
-    glUniform3f(viewPosLoc, camPos.x, camPos.y, camPos.z);
-    
-    // Directional light (normalized direction)
-    Vec3 lightDirection = lightDir;
-    lightDirection.normalize();
-    glUniform3f(lightDirLoc, lightDirection.x, lightDirection.y, lightDirection.z);
-    glUniform1f(pointScaleLoc, height * projection[5]);
-    
-    // Draw all balls as points (VBO is already filled by CUDA)
-    glBindVertexArray(vao);
-    glDrawArrays(GL_POINTS, 0, numBalls);
-    glBindVertexArray(0);
-    
-    // Render static scene after balls (for proper depth testing)
-    if (showScene && scene && renderer) {
-        // Sync light direction (normalized, same as balls)
-        Vec3 lightDirection = lightDir;
-        lightDirection.normalize();
-        renderer->getLight().x = lightDirection.x;
-        renderer->getLight().y = lightDirection.y;
-        renderer->getLight().z = lightDirection.z;
-        
-        // Disable backface culling to see both sides
-        glDisable(GL_CULL_FACE);
-        
-        // Render all meshes in the scene
-        for (const Mesh* mesh : scene->getMeshes()) {
-            // Vertices are already transformed, so pass identity matrix to renderer
-            renderer->renderMesh(*mesh, camera, width, height, 1.0f, nullptr);
-        }
-    }
-    
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_POINT_SPRITE);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    
-    // Copy to CUDA buffer
-    glBindTexture(GL_TEXTURE_2D, renderTexture);
-    std::vector<unsigned char> pixels(width * height * 4);
-    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
-    glBindTexture(GL_TEXTURE_2D, 0);
-    
-    for (int y = 0; y < height; y++) {
-        cudaMemcpy(d_out + y * width, pixels.data() + (height - 1 - y) * width * 4, width * 4, cudaMemcpyHostToDevice);
-    }
-    
-    glUseProgram(0);
+    // Clear the PBO to prevent artifacts
+    // Actual rendering happens in render3D() directly to screen
+    cudaMemset(d_out, 0, width * height * sizeof(uchar4));
 }
+
 
 void BallsDemo::renderUI() {
     ImGui::Text("=== GPU-Accelerated Physics Demo ===");
@@ -561,6 +569,144 @@ void BallsDemo::onKeyPress(unsigned char key) {
 }
 
 void BallsDemo::render3D(int width, int height) {
-    // Mesh rendering is now done inside render() method
-    // This method is kept for interface compatibility
+    if (!camera) return;
+    
+    // Render directly to default framebuffer (screen)
+    glViewport(0, 0, width, height);
+    
+    glEnable(GL_DEPTH_TEST);
+    glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    
+    // Enable point sprites
+    glEnable(GL_PROGRAM_POINT_SIZE);
+    glEnable(GL_POINT_SPRITE);
+    
+    glUseProgram(ballShader);
+    
+    // Set up matrices
+    float model[16], view[16], projection[16];
+    for (int i = 0; i < 16; i++) model[i] = 0.0f;
+    model[0] = model[5] = model[10] = model[15] = 1.0f;
+    
+    Vec3 camPos = camera->pos;
+    Vec3 camTarget = camera->pos + camera->forward;
+    
+    // View matrix
+    float fX = camTarget.x - camPos.x;
+    float fY = camTarget.y - camPos.y;
+    float fZ = camTarget.z - camPos.z;
+    float len = sqrt(fX*fX + fY*fY + fZ*fZ);
+    fX /= len; fY /= len; fZ /= len;
+    
+    float upX = camera->up.x, upY = camera->up.y, upZ = camera->up.z;
+    float sX = fY * upZ - fZ * upY;
+    float sY = fZ * upX - fX * upZ;
+    float sZ = fX * upY - fY * upX;
+    len = sqrt(sX*sX + sY*sY + sZ*sZ);
+    sX /= len; sY /= len; sZ /= len;
+    
+    float uX = sY * fZ - sZ * fY;
+    float uY = sZ * fX - sX * fZ;
+    float uZ = sX * fY - sY * fX;
+    
+    view[0] = sX;  view[4] = sY;  view[8] = sZ;   view[12] = -(sX*camPos.x + sY*camPos.y + sZ*camPos.z);
+    view[1] = uX;  view[5] = uY;  view[9] = uZ;   view[13] = -(uX*camPos.x + uY*camPos.y + uZ*camPos.z);
+    view[2] = -fX; view[6] = -fY; view[10] = -fZ; view[14] = (fX*camPos.x + fY*camPos.y + fZ*camPos.z);
+    view[3] = 0;   view[7] = 0;   view[11] = 0;   view[15] = 1;
+    
+    // Projection matrix
+    float fov = camera->fov * 3.14159f / 180.0f;
+    float aspect = (float)width / height;
+    float near = 0.1f, far = 1000.0f;
+    for (int i = 0; i < 16; i++) projection[i] = 0.0f;
+    float f = 1.0f / tan(fov * 0.5f);
+    projection[0] = f / aspect;
+    projection[5] = f;
+    projection[10] = (far + near) / (near - far);
+    projection[11] = -1.0f;
+    projection[14] = (2.0f * far * near) / (near - far);
+    
+    // Set uniforms
+    GLint projLoc = glGetUniformLocation(ballShader, "projectionMat");
+    GLint viewLoc = glGetUniformLocation(ballShader, "viewMat");
+    GLint viewPosLoc = glGetUniformLocation(ballShader, "viewPos");
+    GLint lightDirLoc = glGetUniformLocation(ballShader, "lightDir");
+    GLint pointScaleLoc = glGetUniformLocation(ballShader, "pointScale");
+    
+    glUniformMatrix4fv(projLoc, 1, GL_FALSE, projection);
+    glUniformMatrix4fv(viewLoc, 1, GL_FALSE, view);
+    glUniform3f(viewPosLoc, camPos.x, camPos.y, camPos.z);
+    
+    // Directional light (normalized direction)
+    Vec3 lightDirection = lightDir;
+    lightDirection.normalize();
+    glUniform3f(lightDirLoc, lightDirection.x, lightDirection.y, lightDirection.z);
+    glUniform1f(pointScaleLoc, height * projection[5]);
+    
+    // Draw all balls as points (VBO is already filled by CUDA)
+    glBindVertexArray(vao);
+    glDrawArrays(GL_POINTS, 0, numBalls);
+    glBindVertexArray(0);
+    
+    // Render static scene after balls (for proper depth testing)
+    if (showScene && scene && renderer) {
+        // Sync light direction (normalized, same as balls)
+        Vec3 lightDirection = lightDir;
+        lightDirection.normalize();
+        renderer->getLight().x = lightDirection.x;
+        renderer->getLight().y = lightDirection.y;
+        renderer->getLight().z = lightDirection.z;
+        
+        // Disable backface culling to see both sides
+        glDisable(GL_CULL_FACE);
+        
+        // Render all meshes in the scene
+        for (const Mesh* mesh : scene->getMeshes()) {
+            // Vertices are already transformed, so pass identity matrix to renderer
+            renderer->renderMesh(*mesh, camera, width, height, 1.0f, nullptr);
+        }
+    }
+    
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_POINT_SPRITE);
+    glUseProgram(0);
+    
+    // Render shadows to texture for debugging
+    renderShadows(width, height);
+    
+    // Display shadow texture as fullscreen quad
+    glClear(GL_DEPTH_BUFFER_BIT);  // Clear depth but keep color
+    glDisable(GL_DEPTH_TEST);
+    
+    // Set up orthographic projection for fullscreen quad
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    glOrtho(-1, 1, -1, 1, -1, 1);
+    
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+    
+    // Draw shadow texture
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, shadowTexture);
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+    
+    glBegin(GL_QUADS);
+    glTexCoord2f(0.0f, 0.0f); glVertex2f(-1.0f, -1.0f);
+    glTexCoord2f(1.0f, 0.0f); glVertex2f(1.0f, -1.0f);
+    glTexCoord2f(1.0f, 1.0f); glVertex2f(1.0f, 1.0f);
+    glTexCoord2f(0.0f, 1.0f); glVertex2f(-1.0f, 1.0f);
+    glEnd();
+    
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDisable(GL_TEXTURE_2D);
+    
+    // Restore matrices
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
 }

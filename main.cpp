@@ -109,20 +109,23 @@ void display() {
     
     cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0);
     
-    // Draw texture to screen
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, windowWidth, windowHeight, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    
-    glEnable(GL_TEXTURE_2D);
-    glBegin(GL_QUADS);
-    glTexCoord2f(0.0f, 1.0f); glVertex2f(-1.0f, -1.0f);
-    glTexCoord2f(1.0f, 1.0f); glVertex2f(1.0f, -1.0f);
-    glTexCoord2f(1.0f, 0.0f); glVertex2f(1.0f, 1.0f);
-    glTexCoord2f(0.0f, 0.0f); glVertex2f(-1.0f, 1.0f);
-    glEnd();
-    glDisable(GL_TEXTURE_2D);
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    // Draw texture to screen (only for non-3D demos like Mandelbrot)
+    // 3D demos render directly via OpenGL in render3D()
+    if (!demos[currentDemoIndex]->is3D()) {
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, windowWidth, windowHeight, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        
+        glEnable(GL_TEXTURE_2D);
+        glBegin(GL_QUADS);
+        glTexCoord2f(0.0f, 1.0f); glVertex2f(-1.0f, -1.0f);
+        glTexCoord2f(1.0f, 1.0f); glVertex2f(1.0f, -1.0f);
+        glTexCoord2f(1.0f, 0.0f); glVertex2f(1.0f, 1.0f);
+        glTexCoord2f(0.0f, 0.0f); glVertex2f(-1.0f, 1.0f);
+        glEnd();
+        glDisable(GL_TEXTURE_2D);
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    }
     
     // ImGui rendering
     if (showUI) {
