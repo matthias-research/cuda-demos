@@ -141,8 +141,8 @@ void main()
     vec4 eyeSpacePos = viewMat * vec4(aPos, 1.0);
     gl_Position = projectionMat * eyeSpacePos;
     
-    float dist = length(eyeSpacePos.xyz);
-    gl_PointSize = aRadius * (pointScale / dist);
+    // For orthographic projection, size doesn't change with distance
+    gl_PointSize = aRadius * pointScale;
 }
 )";
 
@@ -161,7 +161,10 @@ void main()
     if (r2 > 1.0)
         discard;
     
-    fragColor = vec4(1.0, 1.0, 1.0, 1.0);
+    // Output depth as grayscale for visualization
+    // gl_FragCoord.z is in [0,1] range (non-linear depth)
+    float depth = gl_FragCoord.z;
+    fragColor = vec4(depth, depth, depth, 1.0);
 }
 )";
 
@@ -392,9 +395,10 @@ void BallsDemo::renderShadows(int width, int height) {
     
     glUniformMatrix4fv(projLoc, 1, GL_FALSE, projection);
     glUniformMatrix4fv(viewLoc, 1, GL_FALSE, view);
-    // For orthographic projection, point size = radius * 2 * projection scale * viewport height
-    // projection[0] = 1/halfSize, so we scale by halfSize * height to get pixel size
-    glUniform1f(pointScaleLoc, (1.0f / projection[0]) * height);
+    // For orthographic projection: pointScale converts world-space radius to screen pixels
+    // projection[0] = 1/halfSize, so radius in NDC = radius * projection[0]
+    // Then multiply by viewport height/2 to get pixels
+    glUniform1f(pointScaleLoc, projection[0] * height);
     
     // Draw all balls as flat white discs
     glBindVertexArray(vao);
@@ -661,10 +665,51 @@ void BallsDemo::render3D(int width, int height) {
         // Disable backface culling to see both sides
         glDisable(GL_CULL_FACE);
         
-        // Render all meshes in the scene
+        // Create shadow map struct with light matrix from renderShadows
+        Renderer::ShadowMap shadowMapData;
+        shadowMapData.texture = shadowTexture;
+        shadowMapData.bias = 0.005f;
+        
+        // Calculate light view-projection matrix (same as in renderShadows)
+        Vec3 lightPos = -lightDirection * (roomSize * 2.0f);
+        Vec3 target(0.0f, 0.0f, 0.0f);
+        Vec3 forward = (target - lightPos).normalized();
+        Vec3 right = Vec3(0, 1, 0).cross(forward).normalized();
+        Vec3 up = forward.cross(right);
+        
+        float lightView[16];
+        lightView[0] = right.x;    lightView[4] = right.y;    lightView[8] = right.z;     lightView[12] = -right.dot(lightPos);
+        lightView[1] = up.x;       lightView[5] = up.y;       lightView[9] = up.z;        lightView[13] = -up.dot(lightPos);
+        lightView[2] = -forward.x; lightView[6] = -forward.y; lightView[10] = -forward.z; lightView[14] = forward.dot(lightPos);
+        lightView[3] = 0;          lightView[7] = 0;          lightView[11] = 0;          lightView[15] = 1;
+        
+        float halfSize = roomSize * 0.6f;
+        float near = 0.1f;
+        float far = roomSize * 4.0f;
+        float lightProj[16];
+        for (int i = 0; i < 16; i++) lightProj[i] = 0.0f;
+        lightProj[0] = 1.0f / halfSize;
+        lightProj[5] = 1.0f / halfSize;
+        lightProj[10] = -2.0f / (far - near);
+        lightProj[14] = -(far + near) / (far - near);
+        lightProj[15] = 1.0f;
+        
+        // Multiply projection * view to get light space matrix (Column-Major order for OpenGL)
+        for (int col = 0; col < 4; col++) {
+            for (int row = 0; row < 4; row++) {
+                shadowMapData.lightMatrix[col * 4 + row] = 0.0f;
+                for (int k = 0; k < 4; k++) {
+                    // Proj(row, k) * View(k, col)
+                    // In column-major: Proj[k*4 + row] * View[col*4 + k]
+                    shadowMapData.lightMatrix[col * 4 + row] += lightProj[k * 4 + row] * lightView[col * 4 + k];
+                }
+            }
+        }
+        
+        // Render all meshes in the scene with shadow map
         for (const Mesh* mesh : scene->getMeshes()) {
             // Vertices are already transformed, so pass identity matrix to renderer
-            renderer->renderMesh(*mesh, camera, width, height, 1.0f, nullptr);
+            renderer->renderMesh(*mesh, camera, width, height, 1.0f, nullptr, 0.0f, &shadowMapData);
         }
     }
     
@@ -672,41 +717,6 @@ void BallsDemo::render3D(int width, int height) {
     glDisable(GL_POINT_SPRITE);
     glUseProgram(0);
     
-    // Render shadows to texture for debugging
+    // Render shadows to texture (no visualization)
     renderShadows(width, height);
-    
-    // Display shadow texture as fullscreen quad
-    glClear(GL_DEPTH_BUFFER_BIT);  // Clear depth but keep color
-    glDisable(GL_DEPTH_TEST);
-    
-    // Set up orthographic projection for fullscreen quad
-    glMatrixMode(GL_PROJECTION);
-    glPushMatrix();
-    glLoadIdentity();
-    glOrtho(-1, 1, -1, 1, -1, 1);
-    
-    glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
-    glLoadIdentity();
-    
-    // Draw shadow texture
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, shadowTexture);
-    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-    
-    glBegin(GL_QUADS);
-    glTexCoord2f(0.0f, 0.0f); glVertex2f(-1.0f, -1.0f);
-    glTexCoord2f(1.0f, 0.0f); glVertex2f(1.0f, -1.0f);
-    glTexCoord2f(1.0f, 1.0f); glVertex2f(1.0f, 1.0f);
-    glTexCoord2f(0.0f, 1.0f); glVertex2f(-1.0f, 1.0f);
-    glEnd();
-    
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glDisable(GL_TEXTURE_2D);
-    
-    // Restore matrices
-    glPopMatrix();
-    glMatrixMode(GL_PROJECTION);
-    glPopMatrix();
-    glMatrixMode(GL_MODELVIEW);
 }

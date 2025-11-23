@@ -12,8 +12,15 @@ public:
     // Initialize shaders
     bool init();
     
+    // Shadow map data
+    struct ShadowMap {
+        GLuint texture = 0;
+        float lightMatrix[16];  // Light view-projection matrix
+        float bias = 0.005f;
+    };
+    
     // Render a mesh with the camera
-    void renderMesh(const Mesh& mesh, Camera* camera, int width, int height, float scale = 1.0f, const float* modelTransform = nullptr, float rotationX = 0.0f);
+    void renderMesh(const Mesh& mesh, Camera* camera, int width, int height, float scale = 1.0f, const float* modelTransform = nullptr, float rotationX = 0.0f, const ShadowMap* shadowMap = nullptr);
     
     // Material properties
     struct Material {

@@ -12,16 +12,19 @@ layout (location = 2) in vec2 aTexCoord;
 out vec3 FragPos;
 out vec3 Normal;
 out vec2 TexCoord;
+out vec4 FragPosLightSpace;
 
 uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
+uniform mat4 lightSpaceMatrix;
 
 void main()
 {
     FragPos = aPos;  // Use untransformed position since vertices are already in world space
     Normal = aNormal;  // Normals already transformed in mesh loading
     TexCoord = aTexCoord;
+    FragPosLightSpace = lightSpaceMatrix * vec4(aPos, 1.0);
     gl_Position = projection * view * model * vec4(aPos, 1.0);
 }
 )";
@@ -34,15 +37,43 @@ out vec4 FragColor;
 in vec3 Normal;
 in vec3 FragPos;
 in vec2 TexCoord;
+in vec4 FragPosLightSpace;
 
 uniform sampler2D textureSampler;
+uniform sampler2D shadowMap;
 uniform bool hasTexture;
+uniform bool useShadowMap;
 
 uniform vec3 lightDir;
 uniform vec3 viewPos;
 uniform float ambientStrength;
 uniform float specularStrength;
 uniform float shininess;
+uniform float shadowBias;
+
+float calculateShadow(vec4 fragPosLightSpace)
+{
+    // Perspective divide
+    vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
+    
+    // Transform to [0,1] range
+    projCoords = projCoords * 0.5 + 0.5;
+    
+    // Check if outside shadow map bounds
+    if (projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 || projCoords.y < 0.0 || projCoords.y > 1.0)
+        return 1.0;  // No shadow
+    
+    // Get depth value from shadow map (stored in color channel as grayscale)
+    float closestDepth = texture(shadowMap, projCoords.xy).r;
+    
+    // Get depth of current fragment
+    float currentDepth = projCoords.z;
+    
+    // Check whether current fragment is in shadow (inverted comparison)
+    float shadow = (currentDepth - shadowBias) > closestDepth ? 1.0 : 0.0;
+    
+    return shadow;
+}
 
 void main()
 {
@@ -66,7 +97,11 @@ void main()
     float spec = pow(max(dot(viewDir, reflectDir), 0.0), shininess);
     vec3 specular = specularStrength * spec * vec3(1.0);
     
-    vec3 result = ambient + diffuse + specular;
+    // Calculate shadow
+    float shadow = useShadowMap ? calculateShadow(FragPosLightSpace) : 1.0;
+    
+    // Combine lighting with shadow (ambient is not affected by shadow)
+    vec3 result = ambient + shadow * (diffuse + specular);
     FragColor = vec4(result, 1.0);
 }
 )";
@@ -193,7 +228,7 @@ void Renderer::setupMatrices(Camera* camera, int width, int height) {
     }
 }
 
-void Renderer::renderMesh(const Mesh& mesh, Camera* camera, int width, int height, float scale, const float* modelTransform, float rotationX) {
+void Renderer::renderMesh(const Mesh& mesh, Camera* camera, int width, int height, float scale, const float* modelTransform, float rotationX, const ShadowMap* shadowMap) {
     if (!shaderProgram || !camera) return;
     
     setupMatrices(camera, width, height);
@@ -237,10 +272,20 @@ void Renderer::renderMesh(const Mesh& mesh, Camera* camera, int width, int heigh
     GLint modelLoc = glGetUniformLocation(shaderProgram, "model");
     GLint viewLoc = glGetUniformLocation(shaderProgram, "view");
     GLint projLoc = glGetUniformLocation(shaderProgram, "projection");
+    GLint lightSpaceLoc = glGetUniformLocation(shaderProgram, "lightSpaceMatrix");
     
     glUniformMatrix4fv(modelLoc, 1, GL_FALSE, modelMatrix);
     glUniformMatrix4fv(viewLoc, 1, GL_FALSE, viewMatrix);
     glUniformMatrix4fv(projLoc, 1, GL_FALSE, projectionMatrix);
+    
+    // Set light space matrix (identity if no shadow map)
+    if (shadowMap) {
+        glUniformMatrix4fv(lightSpaceLoc, 1, GL_FALSE, shadowMap->lightMatrix);
+    } else {
+        float identityMatrix[16];
+        setIdentity(identityMatrix);
+        glUniformMatrix4fv(lightSpaceLoc, 1, GL_FALSE, identityMatrix);
+    }
     
     // Set lighting uniforms
     Vec3 camPos = camera->pos;
@@ -255,6 +300,21 @@ void Renderer::renderMesh(const Mesh& mesh, Camera* camera, int width, int heigh
     glUniform1f(ambientLoc, material.ambientStrength);
     glUniform1f(specularLoc, material.specularStrength);
     glUniform1f(shininessLoc, material.shininess);
+    
+    // Set shadow map
+    GLint useShadowMapLoc = glGetUniformLocation(shaderProgram, "useShadowMap");
+    GLint shadowBiasLoc = glGetUniformLocation(shaderProgram, "shadowBias");
+    
+    if (shadowMap && shadowMap->texture != 0) {
+        glUniform1i(useShadowMapLoc, 1);
+        glUniform1f(shadowBiasLoc, shadowMap->bias);
+        
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, shadowMap->texture);
+        glUniform1i(glGetUniformLocation(shaderProgram, "shadowMap"), 1);
+    } else {
+        glUniform1i(useShadowMapLoc, 0);
+    }
     
     // Set texture
     GLint hasTextureLoc = glGetUniformLocation(shaderProgram, "hasTexture");
@@ -274,6 +334,11 @@ void Renderer::renderMesh(const Mesh& mesh, Camera* camera, int width, int heigh
     
     // Cleanup
     if (mesh.getTexture() != 0) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+    if (shadowMap && shadowMap->texture != 0) {
+        glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
     glUseProgram(0);
