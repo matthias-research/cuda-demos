@@ -11,7 +11,6 @@
 
 #include "Demo.h"
 #include "Camera.h"
-#include "BoxesDemo.h"
 #include "MandelbrotDemo.h"
 #include "BallsDemo.h"
 
@@ -181,12 +180,6 @@ void keyboard(unsigned char key, int x, int y) {
             if (currentDemoIndex != 1) {
                 currentDemoIndex = 1;
                 std::cout << "Switched to: " << demos[1]->getName() << "\n";
-            }
-            break;
-        case '3':
-            if (currentDemoIndex != 2) {
-                currentDemoIndex = 2;
-                std::cout << "Switched to: " << demos[2]->getName() << "\n";
             }
             break;
         case 'h':
@@ -394,12 +387,11 @@ int main(int argc, char** argv) {
     std::cout << "CUDA + OpenGL Demos\n";
     std::cout << "===================\n";
     std::cout << "Controls:\n";
-    std::cout << "  1: 3D Boxes (OpenGL)\n";
+    std::cout << "  1: 3D Bouncing Balls (OpenGL)\n";
     std::cout << "  2: Mandelbrot Fractal (CUDA)\n";
-    std::cout << "  3: 3D Bouncing Balls (OpenGL)\n";
     std::cout << "  H: Hide/show UI\n";
     std::cout << "  ESC: Exit\n\n";
-    std::cout << "3D Camera (Boxes and Balls demos):\n";
+    std::cout << "3D Camera (Balls demo):\n";
     std::cout << "  WASD: Move, Q/E: Up/Down\n";
     std::cout << "  Left Mouse: Orbit around point\n";
     std::cout << "  Middle Mouse: Pan/Translate\n";
@@ -506,9 +498,8 @@ int main(int argc, char** argv) {
     camera.speed = 1.0f;
     
     // Create demos
-    demos.push_back(std::make_unique<BoxesDemo>());
-    demos.push_back(std::make_unique<MandelbrotDemo>());
     demos.push_back(std::make_unique<BallsDemo>());
+    demos.push_back(std::make_unique<MandelbrotDemo>());
     
     // Set camera for 3D demos
     for (auto& demo : demos) {

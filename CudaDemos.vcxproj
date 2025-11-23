@@ -102,7 +102,6 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Camera.cpp" />
-    <ClCompile Include="BoxesDemo.cpp" />
     <ClCompile Include="MandelbrotDemo.cpp" />
     <ClCompile Include="BallsDemo.cpp" />
     <ClCompile Include="Mesh.cpp" />
@@ -117,7 +116,6 @@
     <ClInclude Include="Geometry.h" />
     <ClInclude Include="BVH.h" />
     <ClInclude Include="RigidBodyKernels.h" />
-    <ClInclude Include="BoxesDemo.h" />
     <ClInclude Include="MandelbrotDemo.h" />
     <ClInclude Include="BallsDemo.h" />
     <ClInclude Include="Mesh.h" />

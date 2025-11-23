@@ -24,6 +24,8 @@ out float radius;
 out vec3 sphereColor;
 out vec3 eyePos;
 out vec4 quat;
+out vec3 viewRight;
+out vec3 viewUp;
 
 void main()
 {
@@ -35,6 +37,10 @@ void main()
     sphereColor = aColor;
     eyePos = eyeSpacePos.xyz;
     quat = aQuat;
+    
+    // Extract right and up vectors from view matrix (robust for all orientations)
+    viewRight = normalize(vec3(viewMat[0][0], viewMat[1][0], viewMat[2][0]));
+    viewUp = normalize(vec3(viewMat[0][1], viewMat[1][1], viewMat[2][1]));
     
     // Calculate point size based on radius and distance
     float dist = length(eyeSpacePos.xyz);
@@ -55,6 +61,8 @@ in float radius;
 in vec3 sphereColor;
 in vec3 eyePos;
 in vec4 quat;
+in vec3 viewRight;
+in vec3 viewUp;
 
 out vec4 fragColor;
 
@@ -78,16 +86,14 @@ void main()
     // Calculate 3D position on sphere surface
     float h = sqrt(1.0 - r2);
     
-    // Build tangent space (billboard aligned to view)
+    // Use view matrix axes directly (robust for all camera orientations)
     vec3 viewDir = normalize(viewPos - fragPos);
-    vec3 a0 = normalize(fragPos - viewPos);
-    vec3 a2 = vec3(0.0, 1.0, 0.0);
-    vec3 a1 = normalize(cross(a0, a2));
-    a2 = normalize(cross(a1, a0));
     
-    // Calculate surface position
-    vec3 localPos = radius * (coord.x * a1 + coord.y * a2 - h * a0);
+    // Calculate surface position using view matrix axes
+    vec3 localPos = radius * (coord.x * viewRight + coord.y * viewUp - h * viewDir);
     vec3 surfacePos = fragPos + localPos;
+    
+    // Calculate proper world-space normal for lighting
     vec3 normal = normalize(localPos);
     
     // Rotate normal by quaternion
@@ -109,10 +115,11 @@ void main()
     
     vec3 color = colors[segment];
     
-    // Phong lighting (directional light)
-    float diffuse = max(0.0, dot(lightDir, normal));
+    // Phong lighting (directional light) - negate lightDir to match mesh shader convention
+    vec3 lightDirection = normalize(-lightDir);
+    float diffuse = max(0.0, dot(lightDirection, normal));
     
-    vec3 halfwayDir = normalize(lightDir + viewDir);
+    vec3 halfwayDir = normalize(lightDirection + viewDir);
     float specular = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
     
     float ambient = 0.2;
@@ -378,7 +385,7 @@ void BallsDemo::render(uchar4* d_out, int width, int height) {
     glUniform3f(viewPosLoc, camPos.x, camPos.y, camPos.z);
     
     // Directional light (normalized direction)
-    Vec3 lightDirection = Vec3(lightDirX, lightDirY, lightDirZ);
+    Vec3 lightDirection = lightDir;
     lightDirection.normalize();
     glUniform3f(lightDirLoc, lightDirection.x, lightDirection.y, lightDirection.z);
     glUniform1f(pointScaleLoc, height * projection[5]);
@@ -391,7 +398,7 @@ void BallsDemo::render(uchar4* d_out, int width, int height) {
     // Render static scene after balls (for proper depth testing)
     if (showScene && scene && renderer) {
         // Sync light direction (normalized, same as balls)
-        Vec3 lightDirection = Vec3(lightDirX, lightDirY, lightDirZ);
+        Vec3 lightDirection = lightDir;
         lightDirection.normalize();
         renderer->getLight().x = lightDirection.x;
         renderer->getLight().y = lightDirection.y;
@@ -475,9 +482,9 @@ void BallsDemo::renderUI() {
     
     ImGui::Separator();
     ImGui::Text("Lighting (Directional):");
-    ImGui::SliderFloat("Light Dir X##balls", &lightDirX, -1.0f, 1.0f);
-    ImGui::SliderFloat("Light Dir Y##balls", &lightDirY, -1.0f, 1.0f);
-    ImGui::SliderFloat("Light Dir Z##balls", &lightDirZ, -1.0f, 1.0f);
+    ImGui::SliderFloat("Light Dir X##balls", &lightDir.x, -1.0f, 1.0f);
+    ImGui::SliderFloat("Light Dir Y##balls", &lightDir.y, -1.0f, 1.0f);
+    ImGui::SliderFloat("Light Dir Z##balls", &lightDir.z, -1.0f, 1.0f);
     
     ImGui::Separator();
     ImGui::Text("Static Scene:");
@@ -535,9 +542,7 @@ void BallsDemo::reset() {
     friction = 0.99f;
     roomSize = 20.0f;
     minHeight = 1.0f;
-    lightDirX = 0.3f;
-    lightDirY = 1.0f;
-    lightDirZ = 0.5f;
+    lightDir = -Vec3(0.3f, 1.0f, 0.5f).normalized();
     
     // Reinitialize CUDA physics
     if (cudaVboResource) {

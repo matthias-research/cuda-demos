@@ -61,9 +61,7 @@ private:
     Camera* camera = nullptr;
     
     // Lighting
-    float lightDirX = 0.3f;
-    float lightDirY = 1.0f;
-    float lightDirZ = 0.5f;
+    Vec3 lightDir = Vec3(0.3f, 1.0f, 0.5f).normalized();
     
     // Static scene rendering
     Scene* scene = nullptr;
