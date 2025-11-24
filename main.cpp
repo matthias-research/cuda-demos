@@ -30,6 +30,7 @@ int lastMouseY = 0;
 bool isMouseDragging = false;
 bool isRightMouseDragging = false;
 bool isMiddleMouseDragging = false;
+Vec3 cameraPos = Vec3(0.0f, 15.0f, 35.0f);
 Vec3 orbitCenter(0.0f, 0.0f, 0.0f);  // Center point for camera orbit
 
 // OpenGL buffer object
@@ -497,7 +498,7 @@ int main(int argc, char** argv) {
     // Initialize camera
     camera.init();
     camera.resetView();
-    camera.lookAt(camera.pos, Vec3(0.0f, 0.0f, 0.0f));
+    camera.lookAt(cameraPos, orbitCenter);
     camera.speed = 1.0f;
     
     // Create demos

@@ -642,17 +642,17 @@ __global__ void kernel_integrateQuaternions(BallsDeviceData data, float dt) {
     float* ballData = data.vboData + idx * 14;
     
     // Read quaternion
-    Quat quat(ballData[8], ballData[9], ballData[10], ballData[7]); // x, y, z, w
+    Quat quat(ballData[7], ballData[8], ballData[9], ballData[10]); // x, y, z, w
     
     // Integrate rotation
     Vec3 omega = data.angVel[idx] * dt;
     quat = quat.rotateLinear(quat, omega);
     
     // Write back
-    ballData[7] = quat.w;
-    ballData[8] = quat.x;
-    ballData[9] = quat.y;
-    ballData[10] = quat.z;
+    ballData[7] = quat.x;
+    ballData[8] = quat.y;
+    ballData[9] = quat.z;
+    ballData[10] = quat.w;
 }
 
 // Initialization kernel - sets up balls on a grid

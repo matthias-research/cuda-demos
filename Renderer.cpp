@@ -64,13 +64,23 @@ float calculateShadow(vec4 fragPosLightSpace)
         return 1.0;  // No shadow
     
     // Get depth value from shadow map (stored in color channel as grayscale)
-    float closestDepth = texture(shadowMap, projCoords.xy).r;
-    
-    // Get depth of current fragment
     float currentDepth = projCoords.z;
     
-    // Check whether current fragment is in shadow (inverted comparison)
-    float shadow = (currentDepth - shadowBias) > closestDepth ? 1.0 : 0.0;
+    // PCF (Percentage Closer Filtering) for soft shadows
+    float shadow = 0.0;
+    vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
+    
+    // Sample 3x3 grid around the current fragment
+    for(int x = -1; x <= 1; ++x)
+    {
+        for(int y = -1; y <= 1; ++y)
+        {
+            vec2 offset = vec2(x, y) * texelSize;
+            float closestDepth = texture(shadowMap, projCoords.xy + offset).r;
+            shadow += (currentDepth - shadowBias) > closestDepth ? 1.0 : 0.0;
+        }
+    }
+    shadow /= 9.0;  // Average of 9 samples
     
     return shadow;
 }

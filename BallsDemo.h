@@ -62,8 +62,10 @@ private:
     Camera* camera = nullptr;
     
     // Lighting
+
+    // To the light (OpenGl convention)
     Vec3 lightDir = Vec3(0.3f, 1.0f, 0.5f).normalized();
-    
+
     // Static scene rendering
     Scene* scene = nullptr;
     Renderer* renderer = nullptr;

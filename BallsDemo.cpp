@@ -38,7 +38,6 @@ void main()
     
     // Extract right and up vectors from view matrix (robust for all orientations)
     viewRight = normalize(vec3(viewMat[0][0], viewMat[1][0], viewMat[2][0]));
-    viewUp = normalize(vec3(viewMat[0][1], viewMat[1][1], viewMat[2][1]));
     
     // Calculate point size based on radius and distance
     float dist = length(eyeSpacePos.xyz);
@@ -59,7 +58,6 @@ in float radius;
 in vec3 eyePos;
 in vec4 quat;
 in vec3 viewRight;
-in vec3 viewUp;
 
 out vec4 fragColor;
 
@@ -84,10 +82,12 @@ void main()
     float h = sqrt(1.0 - r2);
     
     // Use view matrix axes directly (robust for all camera orientations)
-    vec3 viewDir = normalize(viewPos - fragPos);
+    vec3 axisZ = normalize(fragPos - viewPos);
+    vec3 axisX = normalize(viewRight);
+    vec3 axisY = cross(axisZ, axisX);
     
     // Calculate surface position using view matrix axes
-    vec3 localPos = radius * (coord.x * viewRight + coord.y * viewUp - h * viewDir);
+    vec3 localPos = radius * (coord.x * axisX + coord.y * axisY - h * axisZ);
     vec3 surfacePos = fragPos + localPos;
     
     // Calculate proper world-space normal for lighting
@@ -100,28 +100,31 @@ void main()
     float angle = atan(rotNormal.z, rotNormal.x);
     int segment = int((angle + PI) / (PI * 2.0) * 6.0);
     segment = segment % 6;
+
+    if (abs(rotNormal.y) > 0.95) {
+        segment = 5; // Top and bottom segments are white
+    }
     
     // Define beach ball colors
     vec3 colors[6];
     colors[0] = vec3(1.0, 0.2, 0.2);   // Red
-    colors[1] = vec3(0.95, 0.5, 0.1);  // Orange
-    colors[2] = vec3(0.95, 0.95, 0.2); // Yellow
+    colors[1] = vec3(1.0, 0.5, 0.2);  // Orange
+    colors[2] = vec3(1.0, 0.95, 0.2); // Yellow
     colors[3] = vec3(0.2, 1.0, 0.2); // Green
-    colors[4] = vec3(0.1, 0.1, 1.0);  // Blue  
+    colors[4] = vec3(0.2, 0.2, 1.0);  // Blue  
     colors[5] = vec3(1.0, 1.0, 1.0); // White
     
     vec3 color = colors[segment];
     
-    // Phong lighting (directional light) - negate lightDir to match mesh shader convention
-    vec3 lightDirection = normalize(-lightDir);
-    float diffuse = max(0.0, dot(lightDirection, normal));
+    // Phong lighting
+    float diffuse = max(0.0, dot(lightDir, normal));
     
-    vec3 halfwayDir = normalize(lightDirection + viewDir);
-    float specular = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
+    vec3 halfwayDir = normalize(lightDir - axisZ);
+    float specular = pow(max(dot(normal, halfwayDir), 0.0), 100.0);
     
     float ambient = 0.2;
     
-    vec3 finalColor = color * (ambient + diffuse * 0.8) + vec3(1.0) * specular * 0.5;
+    vec3 finalColor = color * (ambient + diffuse * 0.6) + vec3(1.0) * specular * 0.5;
     fragColor = vec4(finalColor, 1.0);
 }
 )";
@@ -643,9 +646,8 @@ void BallsDemo::render3D(int width, int height) {
     glUniform3f(viewPosLoc, camPos.x, camPos.y, camPos.z);
     
     // Directional light (normalized direction)
-    Vec3 lightDirection = lightDir;
-    lightDirection.normalize();
-    glUniform3f(lightDirLoc, lightDirection.x, lightDirection.y, lightDirection.z);
+    Vec3 normalizedLightDir = lightDir.normalized();
+    glUniform3f(lightDirLoc, normalizedLightDir.x, normalizedLightDir.y, normalizedLightDir.z);
     glUniform1f(pointScaleLoc, height * projection[5]);
     
     // Draw all balls as points (VBO is already filled by CUDA)
