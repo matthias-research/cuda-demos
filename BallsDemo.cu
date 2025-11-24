@@ -13,7 +13,7 @@
 #include <vector>
 
 // Hash grid parameters
-static const int HASH_SIZE = 370111;  // Prime number for better distribution
+static const int HASH_SIZE = 3700111;  // Prime number for better distribution
 
 // Device data structure - all simulation state on GPU
 struct BallsDeviceData {
@@ -571,18 +571,18 @@ __global__ void kernel_ballMeshCollision(BallsDeviceData data, float searchRadiu
                     }
                 }
             } else {
-                // Ball is inside the mesh - push it out
-                float penetration = dist + radius;
-                ballPos += -direction * penetration;  // Go against direction to exit
-                
-                // Update angular velocity for no-slip condition (only on first substep)
-                if (updateAngularVel) {
-                    // No-slip: ω = (v × n) / r
-                    // Use triangle normal for surface contact
-                    Vec3 tangentialVel = data.vel[idx] - triNormal * triNormal.dot(data.vel[idx]);
-                    Vec3 newAngVel = tangentialVel.cross(triNormal) / radius;
-                    data.angVel[idx] = newAngVel;
-                }
+                //// Ball is inside the mesh - push it out
+                //float penetration = dist + radius;
+                //ballPos += -direction * penetration;  // Go against direction to exit
+                //
+                //// Update angular velocity for no-slip condition (only on first substep)
+                //if (updateAngularVel) {
+                //    // No-slip: ω = (v × n) / r
+                //    // Use triangle normal for surface contact
+                //    Vec3 tangentialVel = data.vel[idx] - triNormal * triNormal.dot(data.vel[idx]);
+                //    Vec3 newAngVel = tangentialVel.cross(triNormal) / radius;
+                //    data.angVel[idx] = newAngVel;
+                //}
             }
             
             // Write corrected position back to VBO

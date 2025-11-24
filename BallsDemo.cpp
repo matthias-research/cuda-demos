@@ -122,7 +122,7 @@ void main()
     vec3 halfwayDir = normalize(lightDir - axisZ);
     float specular = pow(max(dot(normal, halfwayDir), 0.0), 100.0);
     
-    float ambient = 0.2;
+    float ambient = 0.4;
     
     vec3 finalColor = color * (ambient + diffuse * 0.6) + vec3(1.0) * specular * 0.5;
     fragColor = vec4(finalColor, 1.0);

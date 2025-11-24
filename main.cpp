@@ -30,6 +30,7 @@ int lastMouseY = 0;
 bool isMouseDragging = false;
 bool isRightMouseDragging = false;
 bool isMiddleMouseDragging = false;
+float cameraSpeed = 10.0f;
 Vec3 cameraPos = Vec3(0.0f, 15.0f, 35.0f);
 Vec3 orbitCenter(0.0f, 0.0f, 0.0f);  // Center point for camera orbit
 
@@ -499,7 +500,7 @@ int main(int argc, char** argv) {
     camera.init();
     camera.resetView();
     camera.lookAt(cameraPos, orbitCenter);
-    camera.speed = 1.0f;
+    camera.speed = cameraSpeed;
     
     // Create demos
     demos.push_back(std::make_unique<BallsDemo>());

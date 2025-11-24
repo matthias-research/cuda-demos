@@ -33,7 +33,7 @@ private:
     float friction = 1.0f; // no friction
     
     // Ball size parameters
-    float minRadius = 0.2f;
+    float minRadius = 0.4f;
     float maxRadius = 0.4f;
     float minHeight = 10.0f;  // Minimum height for ball creation
     
