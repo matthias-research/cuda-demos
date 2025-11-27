@@ -350,6 +350,7 @@ void Renderer::renderMesh(const Mesh& mesh, Camera* camera, int width, int heigh
     if (shadowMap && shadowMap->texture != 0) {
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
     }
     glUseProgram(0);
 }
