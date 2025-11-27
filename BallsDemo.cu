@@ -13,7 +13,7 @@
 #include <vector>
 
 // Hash grid parameters
-static const int HASH_SIZE = 3700111;  // Prime number for better distribution
+static const int HASH_SIZE = 37000111;  // Prime number for better distribution
 
 // Device data structure - all simulation state on GPU
 struct BallsDeviceData {
@@ -115,7 +115,7 @@ __device__ inline int hashPosition(const Vec3& pos, float gridSpacing, float wor
 }
 
 // Kernel 1: Integrate - save previous position and predict new position (PBD)
-__global__ void kernel_integrate(BallsDeviceData data, float dt, Vec3 gravity, float friction) {
+__global__ void kernel_integrate(BallsDeviceData data, float dt, Vec3 gravity, float friction, float terminalVelocity) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
     
@@ -126,12 +126,20 @@ __global__ void kernel_integrate(BallsDeviceData data, float dt, Vec3 gravity, f
     // Store previous position
     data.prevPos[idx] = pos;
     
-    // Apply friction to velocity
-    data.vel[idx] *= friction;
-    data.angVel[idx] *= friction;
-    
-    // Predict position: pos = pos + vel * dt + gravity * dt^2
-    pos += data.vel[idx] * dt + gravity * (dt * dt);
+    // Update velocity
+    Vec3 vel = data.vel[idx];
+
+    vel += gravity * dt;
+
+    float v = vel.length();
+    if (v > terminalVelocity)
+        vel *= terminalVelocity / v;
+
+    vel *= friction;
+
+    data.vel[idx] = vel;
+
+    pos += vel * dt;
     
     // Write predicted position back to VBO
     ballData[0] = pos.x;
@@ -465,12 +473,7 @@ __global__ void kernel_ballMeshCollision(BallsDeviceData data, float searchRadiu
     // Get root node of mesh BVH
     int rootNode = data.meshBvh.mRootNodes ? data.meshBvh.mRootNodes[0] : -1;
     if (rootNode < 0) return;
-    
-    // Track closest point and triangle
-    float minDistSq = searchRadius * searchRadius;
-    int closestTriIdx = -1;
-    Vec3 closestPoint;
-    
+        
     // Stack-based BVH traversal
     int stack[64];
     stack[0] = rootNode;
@@ -478,89 +481,44 @@ __global__ void kernel_ballMeshCollision(BallsDeviceData data, float searchRadiu
     
     while (stackCount > 0) {
         int nodeIndex = stack[--stackCount];
-        
+
         // Get node bounds
         PackedNodeHalf lower = data.meshBvh.mNodeLowers[nodeIndex];
         PackedNodeHalf upper = data.meshBvh.mNodeUppers[nodeIndex];
-        
-        Bounds3 nodeBounds(Vec3(lower.x, lower.y, lower.z), 
-                          Vec3(upper.x, upper.y, upper.z));
-        
+
+        Bounds3 nodeBounds(Vec3(lower.x, lower.y, lower.z),
+            Vec3(upper.x, upper.y, upper.z));
+
         // Test intersection with query bounds
         if (nodeBounds.intersect(queryBounds)) {
             const int leftIndex = lower.i;
             const int rightIndex = upper.i;
-            
+
             if (lower.b) {  // Leaf node - contains a triangle
                 int triIdx = leftIndex;
-                
+
                 // Get the three vertex indices for this triangle
                 int i0 = data.meshTriIds[triIdx * 3 + 0];
                 int i1 = data.meshTriIds[triIdx * 3 + 1];
                 int i2 = data.meshTriIds[triIdx * 3 + 2];
-                
+
                 // Get the three vertices
                 Vec3 v0 = data.meshVertices[i0];
                 Vec3 v1 = data.meshVertices[i1];
                 Vec3 v2 = data.meshVertices[i2];
-                
+
                 // Compute closest point on triangle to ball center
                 Vec3 baryCoords = getClosestPointOnTriangle(ballPos, v0, v1, v2);
                 Vec3 point = v0 * baryCoords.x + v1 * baryCoords.y + v2 * baryCoords.z;
-                
+
                 // Check if this point is closer than previous closest
-                float distSq = (point - ballPos).magnitudeSquared();
-                if (distSq < minDistSq) {
-                    minDistSq = distSq;
-                    closestTriIdx = triIdx;
-                    closestPoint = point;
-                }
-                
-            } else {  // Internal node
-                // Push children onto stack
-                if (stackCount < 63) {  // Prevent stack overflow
-                    stack[stackCount++] = leftIndex;
-                    stack[stackCount++] = rightIndex;
-                }
-            }
-        }
-    }
-    
-    // Handle collision if we found a closest triangle
-    if (closestTriIdx >= 0) {
-        // Compute distance and direction from closest point to ball center
-        Vec3 delta = ballPos - closestPoint;
-        float dist = delta.magnitude();
-        
-        if (dist > 0.001f) {  // Avoid division by zero
-            Vec3 direction = delta / dist;  // Normalized vector pointing from surface to ball center
-            
-            // Get triangle normal to determine if ball is inside or outside
-            int i0 = data.meshTriIds[closestTriIdx * 3 + 0];
-            int i1 = data.meshTriIds[closestTriIdx * 3 + 1];
-            int i2 = data.meshTriIds[closestTriIdx * 3 + 2];
-            
-            Vec3 v0 = data.meshVertices[i0];
-            Vec3 v1 = data.meshVertices[i1];
-            Vec3 v2 = data.meshVertices[i2];
-            
-            // Compute triangle normal
-            Vec3 edge1 = v1 - v0;
-            Vec3 edge2 = v2 - v0;
-            Vec3 triNormal = edge1.cross(edge2);
-            triNormal = triNormal / triNormal.magnitude();  // Normalize
-            
-            // Determine if ball is inside or outside mesh
-            // If direction and normal point in similar direction (dot > 0), ball is outside
-            float alignment = direction.dot(triNormal);
-            
-            if (alignment > 0.0f) {
-                // Ball is outside the mesh
-                if (dist < radius) {
-                    // Collision: push ball out along direction
-                    float penetration = radius - dist;
-                    ballPos += direction * penetration;
-                    
+                Vec3 n = ballPos - point;
+                float d = n.normalize();
+                if (d < radius)
+                {
+                    ballPos += n * (radius - d);
+                    Vec3 triNormal = (v1 - v0).cross(v2 - v0).normalized();
+
                     // Update angular velocity for no-slip condition (only on first substep)
                     if (updateAngularVel) {
                         // No-slip: ω = (v × n) / r
@@ -570,27 +528,20 @@ __global__ void kernel_ballMeshCollision(BallsDeviceData data, float searchRadiu
                         data.angVel[idx] = newAngVel;
                     }
                 }
-            } else {
-                //// Ball is inside the mesh - push it out
-                //float penetration = dist + radius;
-                //ballPos += -direction * penetration;  // Go against direction to exit
-                //
-                //// Update angular velocity for no-slip condition (only on first substep)
-                //if (updateAngularVel) {
-                //    // No-slip: ω = (v × n) / r
-                //    // Use triangle normal for surface contact
-                //    Vec3 tangentialVel = data.vel[idx] - triNormal * triNormal.dot(data.vel[idx]);
-                //    Vec3 newAngVel = tangentialVel.cross(triNormal) / radius;
-                //    data.angVel[idx] = newAngVel;
-                //}
             }
-            
-            // Write corrected position back to VBO
-            ballData[0] = ballPos.x;
-            ballData[1] = ballPos.y;
-            ballData[2] = ballPos.z;
+            else {  // Internal node
+             // Push children onto stack
+                if (stackCount < 63) {  // Prevent stack overflow
+                    stack[stackCount++] = leftIndex;
+                    stack[stackCount++] = rightIndex;
+                }
+            }
         }
     }
+    // Write corrected position back to VBO
+    ballData[0] = ballPos.x;
+    ballData[1] = ballPos.y;
+    ballData[2] = ballPos.z;
 }
 
 // Kernel: Apply collision corrections with relaxation (PBD)
@@ -908,7 +859,7 @@ extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, f
     }
 }
 
-extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float bounce, float roomSize, 
+extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float terminalVelocity, float bounce, float roomSize, 
                                    cudaGraphicsResource* vboResource, bool useBVH) {
     if (g_deviceData.numBalls == 0) return;
     
@@ -964,7 +915,7 @@ extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float 
     {
 
         // Run physics pipeline
-        kernel_integrate << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, sdt, gravity, friction);
+        kernel_integrate << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, sdt, gravity, friction, terminalVelocity);
 
         // Zero correction buffers before collision detection
         g_deviceData.posCorr.setZero();

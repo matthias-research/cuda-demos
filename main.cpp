@@ -104,7 +104,9 @@ void display() {
     cudaGraphicsResourceGetMappedPointer((void**)&d_out, &num_bytes, cuda_pbo_resource);
     
     // Call render3D first (if demo supports it) for OpenGL-based mesh rendering
-    demos[currentDemoIndex]->render3D(windowWidth, windowHeight);
+    if (demos[currentDemoIndex]->is3D()) {
+        demos[currentDemoIndex]->render3D(windowWidth, windowHeight);
+    }
     
     // Render current demo (CUDA or other)
     demos[currentDemoIndex]->render(d_out, windowWidth, windowHeight);
@@ -114,6 +116,17 @@ void display() {
     // Draw texture to screen (only for non-3D demos like Mandelbrot)
     // 3D demos render directly via OpenGL in render3D()
     if (!demos[currentDemoIndex]->is3D()) {
+        // Reset OpenGL state for 2D rendering
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_LIGHTING);
+        glUseProgram(0);
+        
+        // Set up orthographic projection for 2D texture quad
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+        
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
         glBindTexture(GL_TEXTURE_2D, tex);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, windowWidth, windowHeight, GL_RGBA, GL_UNSIGNED_BYTE, NULL);

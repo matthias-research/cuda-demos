@@ -22,23 +22,24 @@ struct Ball {
 
 // CUDA physics functions (implemented in BallsDemo.cu)
 extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, float maxRadius, float minHeight, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene);
-extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float bounce, float roomSize, cudaGraphicsResource* vboResource, bool useBVH);
+extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float terminalVelocity, float bounce, float roomSize, cudaGraphicsResource* vboResource, bool useBVH);
 extern "C" void cleanupCudaPhysics(cudaGraphicsResource* vboResource);
 
 class BallsDemo : public Demo {
 private:
-    int numBalls = 10000;  // Start with more balls to showcase GPU power
+    int numBalls = 100;  // Start with more balls to showcase GPU power
     float gravity = 9.8f;
     float bounce = 0.85f;  // Coefficient of restitution
     float friction = 1.0f; // no friction
+    float terminalVelocity = 10.0f;
     
     // Ball size parameters
-    float minRadius = 0.4f;
-    float maxRadius = 0.4f;
-    float minHeight = 10.0f;  // Minimum height for ball creation
+    float minRadius = 0.25f;
+    float maxRadius = 0.25f;
+    float minHeight = 100.0f;  // Minimum height for ball creation
     
     // Simulation bounds
-    float roomSize = 30.0f;  // Double size room for more balls
+    float roomSize = 400.0f;  // Double size room for more balls
     
     // OpenGL resources
     GLuint vao, vbo;

@@ -199,7 +199,9 @@ BallsDemo::BallsDemo() : vao(0), vbo(0), ballShader(0), ballShadowShader(0),
     
     // Optionally load a static scene (uncomment when you have a .glb file)
     scene = new Scene();
-    if (scene->load("assets/bunny.glb")) {
+    if (scene->load("D:/Models/City R5/cityR5.glb")) {
+
+//    if (scene->load("assets/city.glb")) {
         showScene = true;
     }
     
@@ -423,7 +425,7 @@ void BallsDemo::update(float deltaTime) {
     
     // Update physics on GPU (only if not paused)
     if (!paused && useCuda && cudaVboResource) {
-        updateCudaPhysics(deltaTime, Vec3(0, -gravity, 0), friction, bounce, roomSize, cudaVboResource, useBVH);
+        updateCudaPhysics(deltaTime, Vec3(0, -gravity, 0), friction, terminalVelocity, bounce, roomSize, cudaVboResource, useBVH);
     }
 }
 
