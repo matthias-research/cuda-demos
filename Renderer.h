@@ -42,6 +42,10 @@ public:
     void setLight(const Light& l) { light = l; }
     Light& getLight() { return light; }
     
+    // Baked lighting toggle
+    void setUseBakedLighting(bool enabled) { useBakedLighting = enabled; }
+    bool getUseBakedLighting() const { return useBakedLighting; }
+    
     // Cleanup
     void cleanup();
     
@@ -51,6 +55,7 @@ private:
     GLuint shaderProgram = 0;
     Material material;
     Light light;
+    bool useBakedLighting = false;
     
     // Cached matrices
     float modelMatrix[16];

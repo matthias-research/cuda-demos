@@ -15,8 +15,8 @@
 #include "BallsDemo.h"
 
 // Window dimensions (can change on resize)
-unsigned int windowWidth = 1024;
-unsigned int windowHeight = 768;
+unsigned int windowWidth = 2048;
+unsigned int windowHeight = 1536;
 
 // Demo management
 std::vector<std::unique_ptr<Demo>> demos;
@@ -148,8 +148,10 @@ void display() {
         ImGui_ImplGLUT_NewFrame();
         ImGui::NewFrame();
         
+        // Scale window size with DPI
+        static float dpiScale = ImGui::GetIO().FontGlobalScale;
         ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(320, 750), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(640 * dpiScale, 1500 * dpiScale), ImGuiCond_FirstUseEver);
         ImGui::Begin("CUDA Demo Controls", &showUI, ImGuiWindowFlags_None);
         
         ImGui::Text("FPS: %.1f", fps);
@@ -420,8 +422,12 @@ int main(int argc, char** argv) {
     std::cout << "  Click and drag: Pan\n";
     std::cout << "  Arrow keys: Pan\n\n";
     
+    SetProcessDPIAware();
+
     // Initialize GLUT
     glutInit(&argc, argv);
+
+    glutSetOption(GLUT_MULTISAMPLE, 8);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA);
     glutInitWindowSize(windowWidth, windowHeight);
     glutCreateWindow("CUDA Demos");
@@ -447,6 +453,10 @@ int main(int argc, char** argv) {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     
+    // Scale fonts for high DPI
+    float dpiScale = 1.5f; // Adjust this value based on your display (1.5f, 2.0f, etc.)
+    io.FontGlobalScale = dpiScale;
+    
     ImGui_ImplGLUT_Init();
     ImGui_ImplOpenGL3_Init("#version 130");
     
@@ -458,6 +468,7 @@ int main(int argc, char** argv) {
     style.GrabRounding = 2.0f;
     style.WindowBorderSize = 1.0f;
     style.FrameBorderSize = 0.0f;
+    style.ScaleAllSizes(dpiScale); // Scale UI elements to match font scaling
     
     ImVec4* colors = style.Colors;
     colors[ImGuiCol_Text]                   = ImVec4(0.95f, 0.95f, 0.95f, 1.00f);

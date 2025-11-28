@@ -27,7 +27,7 @@ extern "C" void cleanupCudaPhysics(cudaGraphicsResource* vboResource);
 
 class BallsDemo : public Demo {
 private:
-    int numBalls = 100;  // Start with more balls to showcase GPU power
+    int numBalls = 50000000;  // Start with more balls to showcase GPU power
     float gravity = 9.8f;
     float bounce = 0.85f;  // Coefficient of restitution
     float friction = 1.0f; // no friction
@@ -36,10 +36,10 @@ private:
     // Ball size parameters
     float minRadius = 0.25f;
     float maxRadius = 0.25f;
-    float minHeight = 100.0f;  // Minimum height for ball creation
+    float minHeight = 200.0f;  // Minimum height for ball creation
     
     // Simulation bounds
-    float roomSize = 400.0f;  // Double size room for more balls
+    float roomSize = 600.0f;  // Double size room for more balls
     
     // OpenGL resources
     GLuint vao, vbo;
@@ -71,6 +71,7 @@ private:
     Scene* scene = nullptr;
     Renderer* renderer = nullptr;
     bool showScene = false;
+    bool useBakedLighting = false;
     
     void initBalls();
     void initGL();

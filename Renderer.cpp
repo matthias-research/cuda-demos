@@ -43,6 +43,7 @@ uniform sampler2D textureSampler;
 uniform sampler2D shadowMap;
 uniform bool hasTexture;
 uniform bool useShadowMap;
+uniform bool useBakedLighting;
 
 uniform vec3 lightDir;
 uniform vec3 viewPos;
@@ -87,6 +88,13 @@ float calculateShadow(vec4 fragPosLightSpace)
 
 void main()
 {
+    // If using baked lighting, just output the texture as-is
+    if (useBakedLighting) {
+        vec3 color = hasTexture ? texture(textureSampler, TexCoord).rgb : vec3(1.0);
+        FragColor = vec4(color, 1.0);
+        return;
+    }
+    
     // Base color from texture or white
     vec3 baseColor = hasTexture ? texture(textureSampler, TexCoord).rgb : vec3(1.0);
     
@@ -325,6 +333,10 @@ void Renderer::renderMesh(const Mesh& mesh, Camera* camera, int width, int heigh
     } else {
         glUniform1i(useShadowMapLoc, 0);
     }
+    
+    // Set baked lighting flag
+    GLint useBakedLightingLoc = glGetUniformLocation(shaderProgram, "useBakedLighting");
+    glUniform1i(useBakedLightingLoc, useBakedLighting ? 1 : 0);
     
     // Set texture
     GLint hasTextureLoc = glGetUniformLocation(shaderProgram, "hasTexture");

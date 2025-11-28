@@ -203,7 +203,10 @@ BallsDemo::BallsDemo() : vao(0), vbo(0), ballShader(0), ballShadowShader(0),
 
 //    if (scene->load("assets/city.glb")) {
         showScene = true;
+        useBakedLighting = true;  // Enable baked lighting mode by default
     }
+    
+    paused = true;  // Start in paused mode
     
     initGL();
     initBalls();
@@ -509,8 +512,11 @@ void BallsDemo::renderUI() {
         ImGui::Text("  Meshes loaded: %zu", scene->getMeshCount());
         ImGui::Checkbox("Show Scene##balls", &showScene);
         if (renderer) {
-            ImGui::SliderFloat("Mesh Ambient##balls", &renderer->getMaterial().ambientStrength, 0.0f, 1.0f);
-            ImGui::SliderFloat("Mesh Specular##balls", &renderer->getMaterial().specularStrength, 0.0f, 2.0f);
+            ImGui::Checkbox("Use Baked Lighting##balls", &useBakedLighting);
+            if (!useBakedLighting) {
+                ImGui::SliderFloat("Mesh Ambient##balls", &renderer->getMaterial().ambientStrength, 0.0f, 1.0f);
+                ImGui::SliderFloat("Mesh Specular##balls", &renderer->getMaterial().specularStrength, 0.0f, 2.0f);
+            }
         }
     } else {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "No mesh loaded");
@@ -668,6 +674,9 @@ void BallsDemo::render3D(int width, int height) {
         
         // Disable backface culling to see both sides
         glDisable(GL_CULL_FACE);
+        
+        // Set baked lighting mode
+        renderer->setUseBakedLighting(useBakedLighting);
         
         // Create shadow map struct with light matrix from renderShadows
         Renderer::ShadowMap shadowMapData;
