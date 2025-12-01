@@ -42,6 +42,7 @@ struct BallsDeviceData {
         numMeshTriangles = 0;
         meshesBvh.free();
         trianglesBvh.free();
+        floatBuffer.free();
     }
     
     size_t allocationSize() const
@@ -66,6 +67,7 @@ struct BallsDeviceData {
         s += meshBoundsUpper.allocationSize();
         s += meshTriBoundsLower.allocationSize();
         s += meshTriBoundsUpper.allocationSize();
+        s += floatBuffer.allocationSize();
         return s;
     }
     
@@ -90,7 +92,7 @@ struct BallsDeviceData {
     // BVH collision detection
     DeviceBuffer<Vec4> ballBoundsLowers;  // Lower bounds for BVH
     DeviceBuffer<Vec4> ballBoundsUppers;  // Upper bounds for BVH
-    BVH bvh;                              // BVH structure
+    BVH ballsBvh;                         // BVH structure for balls
     
     // Mesh collision data
     DeviceBuffer<int> meshFirstTriangle; // Starting triangle index per mesh
@@ -112,6 +114,8 @@ struct BallsDeviceData {
     
     // VBO data (mapped from OpenGL)
     float* vboData = nullptr;      // Interleaved: pos(3), radius(1), color(3), quat(4), pad(3) = 14 floats
+
+    DeviceBuffer<float> floatBuffer; // General purpose float buffer
 };
 
 // Global device data (stored on host, contains device pointers)
@@ -357,7 +361,7 @@ __global__ void kernel_ballCollision(BallsDeviceData data, float bounce) {
 }
 
 // Kernel 5: Wall collision (generalized for arbitrary planes)
-__global__ void kernel_wallCollision(BallsDeviceData data, float roomSize, float bounce, bool updateAngularVel) {
+__global__ void kernel_wallCollision(BallsDeviceData data, Bounds3 sceneBounds, float bounce, bool updateAngularVel) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
     
@@ -365,17 +369,15 @@ __global__ void kernel_wallCollision(BallsDeviceData data, float roomSize, float
     Vec3 pos(ballData[0], ballData[1], ballData[2]);
     float radius = ballData[3];
     
-    float halfRoom = roomSize * 0.5f;
-    
     // Define 5 walls as planes (normal points inward, n·p + d = 0 on plane)
     // Plane equation: n·p + d = 0, where positive values of (n·p + d) mean "inside the room"
+    // No ceiling - open upwards
     Plane walls[5] = {
-        Plane(Vec3(-1, 0, 0),  halfRoom),    // +X wall at x = +halfRoom (normal points left)
-        Plane(Vec3(1, 0, 0),   halfRoom),    // -X wall at x = -halfRoom (normal points right)
-        Plane(Vec3(0, 1, 0),   0),           // Floor at y = 0 (normal points up)
-//        Plane(Vec3(0, -1, 0),  roomSize),    // Ceiling at y = roomSize (normal points down)
-        Plane(Vec3(0, 0, -1),  halfRoom),    // +Z wall at z = +halfRoom (normal points forward)
-        Plane(Vec3(0, 0, 1),   halfRoom)     // -Z wall at z = -halfRoom (normal points back)
+        Plane(Vec3(-1, 0, 0),  sceneBounds.maximum.x),    // +X wall (normal points left)
+        Plane(Vec3(1, 0, 0),   -sceneBounds.minimum.x),   // -X wall (normal points right)
+        Plane(Vec3(0, 1, 0),   -sceneBounds.minimum.y),   // Floor (normal points up)
+        Plane(Vec3(0, 0, -1),  sceneBounds.maximum.z),    // +Z wall (normal points forward)
+        Plane(Vec3(0, 0, 1),   -sceneBounds.minimum.z)    // -Z wall (normal points back)
     };
     
     // Check collision with each wall
@@ -422,7 +424,7 @@ __global__ void kernel_ballCollision_BVH(BallsDeviceData data, float bounce) {
                        pos + Vec3(radius, radius, radius));
     
     // Get root node
-    int rootNode = data.bvh.mRootNodes ? data.bvh.mRootNodes[0] : -1;
+    int rootNode = data.ballsBvh.mRootNodes ? data.ballsBvh.mRootNodes[0] : -1;
     if (rootNode < 0) return;
     
     // Stack-based BVH traversal
@@ -434,8 +436,8 @@ __global__ void kernel_ballCollision_BVH(BallsDeviceData data, float bounce) {
         int nodeIndex = stack[--stackCount];
         
         // Get node bounds
-        PackedNodeHalf lower = data.bvh.mNodeLowers[nodeIndex];
-        PackedNodeHalf upper = data.bvh.mNodeUppers[nodeIndex];
+        PackedNodeHalf lower = data.ballsBvh.mNodeLowers[nodeIndex];
+        PackedNodeHalf upper = data.ballsBvh.mNodeUppers[nodeIndex];
         
         Bounds3 nodeBounds(Vec3(lower.x, lower.y, lower.z), 
                           Vec3(upper.x, upper.y, upper.z));
@@ -668,8 +670,8 @@ __global__ void kernel_integrateQuaternions(BallsDeviceData data, float dt) {
 }
 
 // Initialization kernel - sets up balls on a grid
-__global__ void kernel_initBalls(BallsDeviceData data, float roomSize, float minRadius, float maxRadius, float minHeight,
-                                  int ballsPerLayer, int ballsPerRow, float gridSpacing, unsigned long seed) {
+__global__ void kernel_initBalls(BallsDeviceData data, Bounds3 ballsBounds, float minRadius, float maxRadius,
+                                  int ballsPerLayer, int ballsPerRow, int ballsPerCol, float gridSpacing, unsigned long seed) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
     
@@ -686,16 +688,15 @@ __global__ void kernel_initBalls(BallsDeviceData data, float roomSize, float min
     
     float* ballData = data.vboData + idx * 14;
     
-    // Grid-based position
+    // Grid-based position within ballsBounds
     int layer = idx / ballsPerLayer;
     int inLayer = idx % ballsPerLayer;
     int row = inLayer / ballsPerRow;
     int col = inLayer % ballsPerRow;
     
-    float halfRoom = roomSize * 0.5f;
-    ballData[0] = -halfRoom + gridSpacing + col * gridSpacing;  // x
-    ballData[2] = -halfRoom + gridSpacing + row * gridSpacing;  // z
-    ballData[1] = minHeight + layer * gridSpacing;              // y (start from minHeight)
+    ballData[0] = ballsBounds.minimum.x + gridSpacing + col * gridSpacing;  // x
+    ballData[2] = ballsBounds.minimum.z + gridSpacing + row * gridSpacing;  // z
+    ballData[1] = ballsBounds.minimum.y + gridSpacing + layer * gridSpacing; // y
     
     // Random radius
     ballData[3] = minRadius + FRAND() * (maxRadius - minRadius);
@@ -749,11 +750,170 @@ __global__ void kernel_initBalls(BallsDeviceData data, float roomSize, float min
     #undef FRAND
 }
 
+
+__device__ bool kernel_rayBoundsIntersection(Bounds3 bounds, Ray ray)
+{
+    float tEntry = -MaxFloat;
+    float tExit = MaxFloat;
+
+    for (int i = 0; i < 3; ++i)
+    {
+        if (ray.dir[i] != 0.0f)
+        {
+            float t1 = (bounds.minimum[i] - ray.orig[i]) / ray.dir[i];
+            float t2 = (bounds.maximum[i] - ray.orig[i]) / ray.dir[i];
+
+            tEntry = Max(tEntry, Min(t1, t2));
+            tExit = Min(tExit, Max(t1, t2));
+        }
+        else if (ray.orig[i] < bounds.minimum[i] || ray.orig[i] > bounds.maximum[i])
+            return false;
+    }
+
+    return tExit > 0.0f && tEntry < tExit;
+}
+
+
+//-----------------------------------------------------------------------------
+__device__ bool kernel_rayTriangleIntersection(
+    const Ray& ray, const Vec3& a, const Vec3& b, const Vec3& c, float& t, float& u, float& v)
+{
+    t = MaxFloat;
+
+    Vec3 edge1, edge2, tvec, pvec, qvec;
+    float det, inv_det;
+
+    edge1 = b - a;
+    edge2 = c - a;
+    pvec = ray.dir.cross(edge2);
+    det = edge1.dot(pvec);
+
+    if (det == 0.0f)
+        return false;
+    inv_det = 1.0f / det;
+    tvec = ray.orig - a;
+
+    u = tvec.dot(pvec) * inv_det;
+    if (u < 0.0f || u > 1.0f)
+        return false;
+
+    qvec = tvec.cross(edge1);
+    v = ray.dir.dot(qvec) * inv_det;
+    if (v < 0.0f || u + v > 1.0f)
+        return false;
+
+    t = edge2.dot(qvec) * inv_det;
+
+    return true;
+}
+
+
+// Kernel: Ball-mesh collision using BVH
+__device__ void kernel_raycastMesh(BallsDeviceData data, int meshIdx, Ray ray) {
+
+    int rootNode = data.trianglesBvh.mRootNodes[meshIdx];
+    if (rootNode < 0) return;
+        
+    int stack[64];
+    stack[0] = rootNode;
+    int stackCount = 1;
+
+    float& minT = data.floatBuffer[0]; 
+    
+    while (stackCount > 0) {
+        int nodeIndex = stack[--stackCount];
+
+        // Get node bounds
+        PackedNodeHalf lower = data.trianglesBvh.mNodeLowers[nodeIndex];
+        PackedNodeHalf upper = data.trianglesBvh.mNodeUppers[nodeIndex];
+
+        Bounds3 nodeBounds(Vec3(lower.x, lower.y, lower.z),
+            Vec3(upper.x, upper.y, upper.z));
+        
+        if (kernel_rayBoundsIntersection(nodeBounds, ray))
+        {
+            const int leftIndex = lower.i;
+            const int rightIndex = upper.i;
+
+            if (lower.b) {  // Leaf node - contains a triangle
+                int triIdx = leftIndex;
+
+                // Get the three vertex indices for this triangle
+                int i0 = data.meshTriIds[triIdx * 3 + 0];
+                int i1 = data.meshTriIds[triIdx * 3 + 1];
+                int i2 = data.meshTriIds[triIdx * 3 + 2];
+
+                // Get the three vertices
+                Vec3 v0 = data.meshVertices[i0];
+                Vec3 v1 = data.meshVertices[i1];
+                Vec3 v2 = data.meshVertices[i2];
+
+                float t, u, v;
+
+                if (kernel_rayTriangleIntersection(ray, v0, v1, v2, t, u, v))
+                {
+                    if (t > 0.0f && t < minT)
+                    {
+                        minT = t;
+                    }
+                }
+            }
+            else {  // Internal node
+             // Push children onto stack
+                if (stackCount < 63) {  // Prevent stack overflow
+                    stack[stackCount++] = leftIndex;
+                    stack[stackCount++] = rightIndex; 
+                }
+            }
+        }
+    }
+}
+
+
+__global__ void kernel_raycastMeshes(BallsDeviceData data, Ray ray)
+{
+
+    int stack[64];
+    stack[0] = data.meshesBvh.mRootNodes[0];
+    int count = 1;
+
+    float& minT = data.floatBuffer[0];
+    minT = MaxFloat;
+
+    while (count)
+    {
+        const int nodeIndex = stack[--count];
+
+        PackedNodeHalf lower = data.meshesBvh.mNodeLowers[nodeIndex];
+        PackedNodeHalf upper = data.meshesBvh.mNodeUppers[nodeIndex];
+
+        Bounds3 bounds(Vec3(lower.x, lower.y, lower.z), Vec3(upper.x, upper.y, upper.z));
+
+        if (kernel_rayBoundsIntersection(bounds, ray))
+        {
+           const int leftIndex = lower.i;
+           const int rightIndex = upper.i;
+
+           if (lower.b)
+           {
+               kernel_raycastMesh(data, leftIndex, ray);
+           }
+           else
+           {
+               stack[count++] = leftIndex;
+               stack[count++] = rightIndex;
+           }
+        }
+    }
+}
+
+
+
 // Host functions callable from BallsDemo.cpp
 
 static BVHBuilder* g_bvhBuilder = nullptr;
 
-extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, float maxRadius, float minHeight, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene) {
+void initCudaPhysics(int numBalls, Bounds3 sceneBounds, Bounds3 ballsBounds, float minRadius, float maxRadius, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene) {
     g_deviceData.numBalls = numBalls;
     g_deviceData.worldOrig = -100.0f;
     g_bvhBuilder = bvhBuilder;
@@ -800,21 +960,24 @@ extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, f
     // Update VBO pointer
     g_deviceData.vboData = d_vboData;
     
-    // Calculate grid layout parameters
+    // Calculate grid layout parameters based on ballsBounds
     float gridSpacing = 2.0f * maxRadius;  // Space between ball centers
-    float halfRoom = roomSize * 0.5f;
-    float usableWidth = roomSize - 2.0f * gridSpacing;  // Leave margin from walls
+    Vec3 spawnSize = ballsBounds.maximum - ballsBounds.minimum;
+    float usableWidth = spawnSize.x - 2.0f * gridSpacing;  // Leave margin
+    float usableDepth = spawnSize.z - 2.0f * gridSpacing;
     int ballsPerRow = (int)(usableWidth / gridSpacing);
     if (ballsPerRow < 1) ballsPerRow = 1;
-    int ballsPerLayer = ballsPerRow * ballsPerRow;
+    int ballsPerCol = (int)(usableDepth / gridSpacing);
+    if (ballsPerCol < 1) ballsPerCol = 1;
+    int ballsPerLayer = ballsPerRow * ballsPerCol;
     
     // Initialize balls with grid data
     int numBlocks = (numBalls + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
     printf("Launching kernel_initBalls with %d blocks, %d threads per block, %d total balls\n", numBlocks, THREADS_PER_BLOCK, numBalls);
     printf("Grid layout: %d balls per row, %d balls per layer, spacing: %.2f\n", ballsPerRow, ballsPerLayer, gridSpacing);
     
-    kernel_initBalls<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, roomSize, minRadius, maxRadius, minHeight,
-                                                        ballsPerLayer, ballsPerRow, gridSpacing, time(nullptr));
+    kernel_initBalls<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, ballsBounds, minRadius, maxRadius,
+                                                        ballsPerLayer, ballsPerRow, ballsPerCol, gridSpacing, time(nullptr));
     
     // Check for kernel launch errors
     cudaError_t launchErr = cudaGetLastError();
@@ -946,7 +1109,7 @@ extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, f
     }
 }
 
-extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float terminalVelocity, float bounce, float roomSize, 
+void updateCudaPhysics(float dt, Vec3 gravity, float friction, float terminalVelocity, float bounce, Bounds3 sceneBounds, 
                                    cudaGraphicsResource* vboResource, bool useBVH) {
     if (g_deviceData.numBalls == 0) return;
     
@@ -970,7 +1133,7 @@ extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float 
 
         // Build BVH
         if (g_bvhBuilder) {
-            g_bvhBuilder->build(g_deviceData.bvh,
+            g_bvhBuilder->build(g_deviceData.ballsBvh,
                 g_deviceData.ballBoundsLowers.buffer,
                 g_deviceData.ballBoundsUppers.buffer,
                 g_deviceData.numBalls,
@@ -1021,7 +1184,7 @@ extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float 
         const float relaxation = 0.3f;
         kernel_applyCorrections << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, relaxation);
 
-        kernel_wallCollision << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, roomSize, bounce, subStep == 0);
+        kernel_wallCollision << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, sceneBounds, bounce, subStep == 0);
 
         // Ball-mesh collision
         if (g_deviceData.numMeshTriangles > 0) {
@@ -1046,7 +1209,7 @@ extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float 
     }
 }
 
-extern "C" void cleanupCudaPhysics(cudaGraphicsResource* vboResource) {
+void cleanupCudaPhysics(cudaGraphicsResource* vboResource) {
     if (g_deviceData.numBalls == 0) return;
     
     // Free all device memory using DeviceBuffer::free()
@@ -1060,5 +1223,26 @@ extern "C" void cleanupCudaPhysics(cudaGraphicsResource* vboResource) {
     if (vboResource) {
         cudaGraphicsUnregisterResource(vboResource);
     }
+}
+
+bool cudaRaycast(const Ray& ray, float& minT)
+{
+    // Upload ray to device
+    BallsDeviceData& data = g_deviceData;
+    if (data.numMeshTriangles == 0)
+        return false;
+    data.floatBuffer.resize(1, false);
+
+    minT = MaxFloat;
+
+    data.floatBuffer.setObject(0, minT);
+
+    // Launch raycast kernel
+    kernel_raycastMeshes<<<1, 1>>>(data, ray);
+    cudaDeviceSynchronize();
+
+    data.floatBuffer.getDeviceObject(minT, 0);
+
+    return (minT < MaxFloat);
 }
 

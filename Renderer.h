@@ -50,15 +50,8 @@ public:
     void cleanup();
     
 private:
-    void setupMatrices(Camera* camera, int width, int height);
-    
     GLuint shaderProgram = 0;
     Material material;
     Light light;
     bool useBakedLighting = false;
-    
-    // Cached matrices
-    float modelMatrix[16];
-    float viewMatrix[16];
-    float projectionMatrix[16];
 };

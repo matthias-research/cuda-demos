@@ -93,6 +93,11 @@ void display() {
     // Update current demo
     demos[currentDemoIndex]->update(deltaTime);
     
+    // Update camera matrices for 3D demos
+    if (demos[currentDemoIndex]->is3D()) {
+        camera.setupMatrices(windowWidth, windowHeight);
+    }
+    
     // Render CUDA demo
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -249,12 +254,15 @@ void specialKeys(int key, int x, int y) {
 // Helper function to compute ray from screen coordinates
 void getMouseRay(int x, int y, Vec3& orig, Vec3& dir) {
     GLint viewport[4];
-    GLdouble modelMatrix[16];
-    GLdouble projMatrix[16];
-    
     glGetIntegerv(GL_VIEWPORT, viewport);
-    glGetDoublev(GL_MODELVIEW_MATRIX, modelMatrix);
-    glGetDoublev(GL_PROJECTION_MATRIX, projMatrix);
+    
+    // Convert camera matrices from float to double for gluUnproject
+    GLdouble viewMatDouble[16];
+    GLdouble projMatDouble[16];
+    for (int i = 0; i < 16; i++) {
+        viewMatDouble[i] = (GLdouble)camera.viewMat[i];
+        projMatDouble[i] = (GLdouble)camera.projMat[i];
+    }
     
     // Flip Y coordinate
     int flippedY = viewport[3] - y - 1;
@@ -263,9 +271,9 @@ void getMouseRay(int x, int y, Vec3& orig, Vec3& dir) {
     GLdouble dx, dy, dz;
     
     // Unproject near plane
-    gluUnProject((GLdouble)x, (GLdouble)flippedY, 0.0, modelMatrix, projMatrix, viewport, &ox, &oy, &oz);
+    gluUnProject((GLdouble)x, (GLdouble)flippedY, 0.0, viewMatDouble, projMatDouble, viewport, &ox, &oy, &oz);
     // Unproject far plane
-    gluUnProject((GLdouble)x, (GLdouble)flippedY, 1.0, modelMatrix, projMatrix, viewport, &dx, &dy, &dz);
+    gluUnProject((GLdouble)x, (GLdouble)flippedY, 1.0, viewMatDouble, projMatDouble, viewport, &dx, &dy, &dz);
     
     orig = Vec3((float)ox, (float)oy, (float)oz);
     Vec3 farPoint((float)dx, (float)dy, (float)dz);

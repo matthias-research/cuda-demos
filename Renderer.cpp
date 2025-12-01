@@ -192,9 +192,6 @@ static void setRotationX(float* mat, float angle) {
 }
 
 Renderer::Renderer() {
-    setIdentity(modelMatrix);
-    setIdentity(viewMatrix);
-    setIdentity(projectionMatrix);
 }
 
 Renderer::~Renderer() {
@@ -225,31 +222,11 @@ bool Renderer::init() {
     return true;
 }
 
-void Renderer::setupMatrices(Camera* camera, int width, int height) {
-    // Model matrix (identity for now, could be passed in for transformations)
-    setIdentity(modelMatrix);
-    
-    // View matrix from camera
-    if (camera) {
-        Vec3 camPos = camera->pos;
-        Vec3 camTarget = camera->pos + camera->forward;
-        setLookAt(viewMatrix, 
-                 camPos.x, camPos.y, camPos.z,
-                 camTarget.x, camTarget.y, camTarget.z,
-                 camera->up.x, camera->up.y, camera->up.z);
-        
-        // Projection matrix
-        setPerspective(projectionMatrix, 
-                      camera->fov * 3.14159f / 180.0f,
-                      (float)width / height,
-                      0.1f, 1000.0f);  // Increased far plane for large meshes
-    }
-}
-
 void Renderer::renderMesh(const Mesh& mesh, Camera* camera, int width, int height, float scale, const float* modelTransform, float rotationX, const ShadowMap* shadowMap) {
     if (!shaderProgram || !camera) return;
     
-    setupMatrices(camera, width, height);
+    // Local model matrix for this mesh
+    float modelMatrix[16];
     
     // Start with base transform
     if (modelTransform) {
@@ -293,8 +270,8 @@ void Renderer::renderMesh(const Mesh& mesh, Camera* camera, int width, int heigh
     GLint lightSpaceLoc = glGetUniformLocation(shaderProgram, "lightSpaceMatrix");
     
     glUniformMatrix4fv(modelLoc, 1, GL_FALSE, modelMatrix);
-    glUniformMatrix4fv(viewLoc, 1, GL_FALSE, viewMatrix);
-    glUniformMatrix4fv(projLoc, 1, GL_FALSE, projectionMatrix);
+    glUniformMatrix4fv(viewLoc, 1, GL_FALSE, camera->viewMat);
+    glUniformMatrix4fv(projLoc, 1, GL_FALSE, camera->projMat);
     
     // Set light space matrix (identity if no shadow map)
     if (shadowMap) {

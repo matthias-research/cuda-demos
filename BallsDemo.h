@@ -21,13 +21,14 @@ struct Ball {
 };
 
 // CUDA physics functions (implemented in BallsDemo.cu)
-extern "C" void initCudaPhysics(int numBalls, float roomSize, float minRadius, float maxRadius, float minHeight, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene);
-extern "C" void updateCudaPhysics(float dt, Vec3 gravity, float friction, float terminalVelocity, float bounce, float roomSize, cudaGraphicsResource* vboResource, bool useBVH);
-extern "C" void cleanupCudaPhysics(cudaGraphicsResource* vboResource);
+void initCudaPhysics(int numBalls, Bounds3 sceneBounds, Bounds3 ballsBounds, float minRadius, float maxRadius, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene);
+void updateCudaPhysics(float dt, Vec3 gravity, float friction, float terminalVelocity, float bounce, Bounds3 sceneBounds, cudaGraphicsResource* vboResource, bool useBVH);
+void cleanupCudaPhysics(cudaGraphicsResource* vboResource);
+bool cudaRaycast(const Ray& ray, float& t);
 
 class BallsDemo : public Demo {
 private:
-    int numBalls = 50000000;  // Start with more balls to showcase GPU power
+    int numBalls = 10000000;  // Start with more balls to showcase GPU power
     float gravity = 9.8f;
     float bounce = 0.85f;  // Coefficient of restitution
     float friction = 1.0f; // no friction
@@ -36,11 +37,14 @@ private:
     // Ball size parameters
     float minRadius = 0.25f;
     float maxRadius = 0.25f;
-    float minHeight = 200.0f;  // Minimum height for ball creation
     
-    // Simulation bounds
-    float roomSize = 600.0f;  // Double size room for more balls
+    // Simulation bounds (walls and floor, open ceiling)
+    Bounds3 sceneBounds = Bounds3(Vec3(-600.0f, 0.0f, -310.0f), Vec3(600.0f, 600.0f, 310.0f));
     
+    // Initial ball spawn region
+//    Bounds3 ballsBounds = Bounds3(Vec3(-100.0f, 100.0f, -200.0f), Vec3(0.0f, 300.0f, 200.0f));
+    Bounds3 ballsBounds = Bounds3(Vec3(-200.0f, 250.0f, -100.0f), Vec3(200.0f, 300.0f, 100.0f));
+
     // OpenGL resources
     GLuint vao, vbo;
     GLuint ballShader;
@@ -65,7 +69,8 @@ private:
     // Lighting
 
     // To the light (OpenGl convention)
-    Vec3 lightDir = Vec3(0.3f, 1.0f, 0.5f).normalized();
+    Vec3 lightDir = Vec3(0.1f, 0.1f, 0.5f).normalized();
+    bool useShadows = false;  // Toggle shadow mapping on/off
 
     // Static scene rendering
     Scene* scene = nullptr;

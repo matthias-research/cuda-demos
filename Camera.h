@@ -28,6 +28,7 @@ public:
     void handleMouseTranslate(int dx, int dy, float scale = 0.01f);
     void handleKey(const bool keyDown[256]);
     void handleWheel(int rotation);
+    void setupMatrices(int width, int height);
 
     Vec3 pos;
     Vec3 forward;

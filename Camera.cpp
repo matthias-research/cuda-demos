@@ -147,3 +147,59 @@ void Camera::handleWheel(int rotation)
 {
     pos += (float)rotation * forward * speed;
 }
+
+//------------------------------------------------------------------------------
+void Camera::setupMatrices(int width, int height)
+{
+    // Helper function to set perspective matrix
+    auto setPerspective = [](float* mat, float fov, float aspect, float near, float far) {
+        for (int i = 0; i < 16; i++) mat[i] = 0.0f;
+        mat[0] = mat[5] = mat[10] = mat[15] = 1.0f;
+        float f = 1.0f / tan(fov * 0.5f);
+        mat[0] = f / aspect;
+        mat[5] = f;
+        mat[10] = (far + near) / (near - far);
+        mat[11] = -1.0f;
+        mat[14] = (2.0f * far * near) / (near - far);
+        mat[15] = 0.0f;
+    };
+    
+    // Helper function to set lookAt matrix
+    auto setLookAt = [](float* mat, float eyeX, float eyeY, float eyeZ,
+                        float centerX, float centerY, float centerZ,
+                        float upX, float upY, float upZ) {
+        float fX = centerX - eyeX;
+        float fY = centerY - eyeY;
+        float fZ = centerZ - eyeZ;
+        float len = sqrt(fX*fX + fY*fY + fZ*fZ);
+        fX /= len; fY /= len; fZ /= len;
+        
+        float sX = fY * upZ - fZ * upY;
+        float sY = fZ * upX - fX * upZ;
+        float sZ = fX * upY - fY * upX;
+        len = sqrt(sX*sX + sY*sY + sZ*sZ);
+        sX /= len; sY /= len; sZ /= len;
+        
+        float uX = sY * fZ - sZ * fY;
+        float uY = sZ * fX - sX * fZ;
+        float uZ = sX * fY - sY * fX;
+        
+        mat[0] = sX;  mat[4] = sY;  mat[8] = sZ;   mat[12] = -(sX*eyeX + sY*eyeY + sZ*eyeZ);
+        mat[1] = uX;  mat[5] = uY;  mat[9] = uZ;   mat[13] = -(uX*eyeX + uY*eyeY + uZ*eyeZ);
+        mat[2] = -fX; mat[6] = -fY; mat[10] = -fZ; mat[14] = (fX*eyeX + fY*eyeY + fZ*eyeZ);
+        mat[3] = 0;   mat[7] = 0;   mat[11] = 0;   mat[15] = 1;
+    };
+    
+    // Compute view matrix
+    Vec3 camTarget = pos + forward;
+    setLookAt(viewMat,
+             pos.x, pos.y, pos.z,
+             camTarget.x, camTarget.y, camTarget.z,
+             up.x, up.y, up.z);
+    
+    // Compute projection matrix
+    setPerspective(projMat,
+                  fov * 3.14159f / 180.0f,
+                  (float)width / height,
+                  0.1f, 1000.0f);
+}

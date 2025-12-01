@@ -233,7 +233,7 @@ BallsDemo::~BallsDemo() {
 void BallsDemo::initBalls() {
     // Initialize CUDA physics with the VBO
     if (useCuda && vbo != 0) {
-        initCudaPhysics(numBalls, roomSize, minRadius, maxRadius, minHeight, vbo, &cudaVboResource, bvhBuilder, scene);
+        initCudaPhysics(numBalls, sceneBounds, ballsBounds, minRadius, maxRadius, vbo, &cudaVboResource, bvhBuilder, scene);
     }
 }
 
@@ -371,7 +371,8 @@ void BallsDemo::renderShadows(int width, int height) {
     lightDirection.normalize();
     
     // Position light far away along the light direction
-    Vec3 lightPos = -lightDirection * (roomSize * 2.0f);  // Position light outside the scene
+    float roomDiag = (sceneBounds.maximum - sceneBounds.minimum).magnitude();
+    Vec3 lightPos = -lightDirection * (roomDiag * 2.0f);  // Position light outside the scene
     Vec3 target(0.0f, 0.0f, 0.0f);  // Look at scene center
     
     // Build view matrix from light's perspective
@@ -385,9 +386,9 @@ void BallsDemo::renderShadows(int width, int height) {
     view[3] = 0;          view[7] = 0;          view[11] = 0;          view[15] = 1;
     
     // Orthographic projection (parallel rays for directional light)
-    float halfSize = roomSize * 0.6f;  // Cover the room area
+    float halfSize = roomDiag * 0.6f;  // Cover the room area
     float near = 0.1f;
-    float far = roomSize * 4.0f;  // Ensure we capture all objects
+    float far = roomDiag * 4.0f;  // Ensure we capture all objects
     
     for (int i = 0; i < 16; i++) projection[i] = 0.0f;
     projection[0] = 1.0f / halfSize;           // Right
@@ -428,20 +429,29 @@ void BallsDemo::update(float deltaTime) {
     
     // Update physics on GPU (only if not paused)
     if (!paused && useCuda && cudaVboResource) {
-        updateCudaPhysics(deltaTime, Vec3(0, -gravity, 0), friction, terminalVelocity, bounce, roomSize, cudaVboResource, useBVH);
+        updateCudaPhysics(deltaTime, Vec3(0, -gravity, 0), friction, terminalVelocity, bounce, sceneBounds, cudaVboResource, useBVH);
     }
 }
 
-bool BallsDemo::raycast(const Vec3& orig, const Vec3& dir, float& t) {
-    // Raycast against floor plane
-    if (dir.y < -0.001f) {
-        float tPlane = -orig.y / dir.y;
-        if (tPlane > 0) {
-            t = tPlane;
-            return true;
+bool BallsDemo::raycast(const Vec3& orig, const Vec3& dir, float& minT) 
+{
+    // raycast against mesh
+    minT = MaxFloat;
+    float t;
+    if (cudaRaycast(Ray(orig, dir), t))
+    {
+        minT = t;
+    }
+
+    // raycast against floor plane of the sceneBounds
+
+    if (dir.y < -1e-6) {
+        t = (sceneBounds.minimum.y - orig.y) / dir.y;
+        if (t > 0 && t < minT) {
+            minT = t;
         }
     }
-    return false;
+    return minT < MaxFloat;
 }
 
 void BallsDemo::render(uchar4* d_out, int width, int height) {
@@ -486,8 +496,12 @@ void BallsDemo::renderUI() {
     ImGui::SliderFloat("Gravity##balls", &gravity, 0.0f, 20.0f, "%.1f");
     ImGui::SliderFloat("Bounce##balls", &bounce, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat("Friction##balls", &friction, 0.8f, 1.0f, "%.3f");
-    ImGui::SliderFloat("Room Size##balls", &roomSize, 5.0f, 30.0f, "%.1f");
-    ImGui::SliderFloat("Min Height##balls", &minHeight, 0.0f, 5.0f, "%.1f");
+    ImGui::Text("Scene Bounds: [%.0f, %.0f, %.0f] to [%.0f, %.0f, %.0f]",
+        sceneBounds.minimum.x, sceneBounds.minimum.y, sceneBounds.minimum.z,
+        sceneBounds.maximum.x, sceneBounds.maximum.y, sceneBounds.maximum.z);
+    ImGui::Text("Spawn Bounds: [%.0f, %.0f, %.0f] to [%.0f, %.0f, %.0f]",
+        ballsBounds.minimum.x, ballsBounds.minimum.y, ballsBounds.minimum.z,
+        ballsBounds.maximum.x, ballsBounds.maximum.y, ballsBounds.maximum.z);
     
     ImGui::Separator();
     ImGui::Text("Collision Detection Method:");
@@ -563,8 +577,8 @@ void BallsDemo::reset() {
     gravity = 9.8f;
     bounce = 0.85f;
     friction = 0.99f;
-    roomSize = 20.0f;
-    minHeight = 1.0f;
+    sceneBounds = Bounds3(Vec3(-10.0f, 0.0f, -10.0f), Vec3(10.0f, 20.0f, 10.0f));
+    ballsBounds = Bounds3(Vec3(-8.0f, 5.0f, -8.0f), Vec3(8.0f, 15.0f, 8.0f));
     lightDir = -Vec3(0.3f, 1.0f, 0.5f).normalized();
     
     // Reinitialize CUDA physics
@@ -653,9 +667,15 @@ void BallsDemo::render3D(int width, int height) {
     glUniformMatrix4fv(viewLoc, 1, GL_FALSE, view);
     glUniform3f(viewPosLoc, camPos.x, camPos.y, camPos.z);
     
-    // Directional light (normalized direction)
+    // Transform light direction to view space so it stays constant relative to camera
+    // Extract rotation part of view matrix (upper 3x3) and apply inverse (transpose for rotation)
     Vec3 normalizedLightDir = lightDir.normalized();
-    glUniform3f(lightDirLoc, normalizedLightDir.x, normalizedLightDir.y, normalizedLightDir.z);
+    Vec3 viewSpaceLightDir(
+        view[0] * normalizedLightDir.x + view[1] * normalizedLightDir.y + view[2] * normalizedLightDir.z,
+        view[4] * normalizedLightDir.x + view[5] * normalizedLightDir.y + view[6] * normalizedLightDir.z,
+        view[8] * normalizedLightDir.x + view[9] * normalizedLightDir.y + view[10] * normalizedLightDir.z
+    );
+    glUniform3f(lightDirLoc, viewSpaceLightDir.x, viewSpaceLightDir.y, viewSpaceLightDir.z);
     glUniform1f(pointScaleLoc, height * projection[5]);
     
     // Draw all balls as points (VBO is already filled by CUDA)
@@ -684,7 +704,8 @@ void BallsDemo::render3D(int width, int height) {
         shadowMapData.bias = 0.005f;
         
         // Calculate light view-projection matrix (same as in renderShadows)
-        Vec3 lightPos = -lightDirection * (roomSize * 2.0f);
+        float roomDiag = (sceneBounds.maximum - sceneBounds.minimum).magnitude();
+        Vec3 lightPos = -lightDirection * (roomDiag * 2.0f);
         Vec3 target(0.0f, 0.0f, 0.0f);
         Vec3 forward = (target - lightPos).normalized();
         Vec3 right = Vec3(0, 1, 0).cross(forward).normalized();
@@ -696,9 +717,9 @@ void BallsDemo::render3D(int width, int height) {
         lightView[2] = -forward.x; lightView[6] = -forward.y; lightView[10] = -forward.z; lightView[14] = forward.dot(lightPos);
         lightView[3] = 0;          lightView[7] = 0;          lightView[11] = 0;          lightView[15] = 1;
         
-        float halfSize = roomSize * 0.6f;
+        float halfSize = roomDiag * 0.6f;
         float near = 0.1f;
-        float far = roomSize * 4.0f;
+        float far = roomDiag * 4.0f;
         float lightProj[16];
         for (int i = 0; i < 16; i++) lightProj[i] = 0.0f;
         lightProj[0] = 1.0f / halfSize;
@@ -722,7 +743,7 @@ void BallsDemo::render3D(int width, int height) {
         // Render all meshes in the scene with shadow map
         for (const Mesh* mesh : scene->getMeshes()) {
             // Vertices are already transformed, so pass identity matrix to renderer
-            renderer->renderMesh(*mesh, camera, width, height, 1.0f, nullptr, 0.0f, &shadowMapData);
+            renderer->renderMesh(*mesh, camera, width, height, 1.0f, nullptr, 0.0f, useShadows ? &shadowMapData : nullptr);
         }
     }
     
@@ -730,6 +751,8 @@ void BallsDemo::render3D(int width, int height) {
     glDisable(GL_POINT_SPRITE);
     glUseProgram(0);
     
-    // Render shadows to texture (no visualization)
-    renderShadows(width, height);
+    // Render shadows to texture (only if enabled)
+    if (useShadows) {
+        renderShadows(width, height);
+    }
 }
