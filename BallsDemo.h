@@ -6,6 +6,7 @@
 #include "BVH.h"
 #include "Scene.h"
 #include "Renderer.h"
+#include "Skybox.h"
 #include <GL/glew.h>
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
@@ -28,7 +29,7 @@ bool cudaRaycast(const Ray& ray, float& t);
 
 class BallsDemo : public Demo {
 private:
-    int numBalls = 10000000;  // Start with more balls to showcase GPU power
+    int numBalls = 10000;  // Start with more balls to showcase GPU power
     float gravity = 9.8f;
     float bounce = 0.85f;  // Coefficient of restitution
     float friction = 1.0f; // no friction
@@ -77,6 +78,10 @@ private:
     Renderer* renderer = nullptr;
     bool showScene = false;
     bool useBakedLighting = false;
+    
+    // Skybox
+    Skybox* skybox = nullptr;
+    bool showSkybox = true;
     
     void initBalls();
     void initGL();

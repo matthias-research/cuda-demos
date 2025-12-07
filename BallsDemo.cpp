@@ -199,11 +199,19 @@ BallsDemo::BallsDemo() : vao(0), vbo(0), ballShader(0), ballShadowShader(0),
     
     // Optionally load a static scene (uncomment when you have a .glb file)
     scene = new Scene();
-    if (scene->load("D:/Models/City R5/cityR5.glb")) {
+//    if (scene->load("D:/Models/City R5/cityR5.glb")) {
 
-//    if (scene->load("assets/city.glb")) {
+    if (scene->load("assets/bunny.glb")) {
         showScene = true;
         useBakedLighting = true;  // Enable baked lighting mode by default
+    }
+    
+    // Initialize skybox
+    skybox = new Skybox();
+    if (!skybox->loadFromBMP("assets/skybox.bmp")) {
+        delete skybox;
+        skybox = nullptr;
+        showSkybox = false;
     }
     
     paused = true;  // Start in paused mode
@@ -226,6 +234,10 @@ BallsDemo::~BallsDemo() {
     if (renderer) {
         renderer->cleanup();
         delete renderer;
+    }
+    if (skybox) {
+        skybox->cleanup();
+        delete skybox;
     }
     cleanupGL();
 }
@@ -538,6 +550,15 @@ void BallsDemo::renderUI() {
     }
     
     ImGui::Separator();
+    ImGui::Text("Skybox:");
+    if (skybox) {
+        ImGui::Checkbox("Show Skybox##balls", &showSkybox);
+    } else {
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "No skybox loaded");
+        ImGui::Text("Place skybox.bmp in assets/ folder");
+    }
+    
+    ImGui::Separator();
     if (ImGui::Button("Reset Simulation##balls", ImVec2(200, 0))) {
         reset();
         ballCountChanged = true;
@@ -606,6 +627,11 @@ void BallsDemo::render3D(int width, int height) {
     glEnable(GL_DEPTH_TEST);
     glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    
+    // Render skybox first (always in background)
+    if (skybox && showSkybox) {
+        skybox->render(camera);
+    }
     
     // Enable point sprites
     glEnable(GL_PROGRAM_POINT_SIZE);
