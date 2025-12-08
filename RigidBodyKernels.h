@@ -257,8 +257,8 @@ __device__ void device_createPairContactPoints(RigidBodyDeviceData data, int bod
 {
     float minDepth = MaxFloat;
     Vec3 normal;
-    int minFaceNr0;
-    int minFaceNr1;
+    int minFaceNr0 = -1;
+    int minFaceNr1 = -1;
 
     //device_findFaceContactPlane(data, bodyNr0, bodyNr1, minDepth, minFaceNr0, minFaceNr1, normal);
     //device_findFaceContactPlane(data, bodyNr1, bodyNr0, minDepth, minFaceNr1, minFaceNr0, normal, true);

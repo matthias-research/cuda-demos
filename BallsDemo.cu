@@ -977,7 +977,7 @@ void initCudaPhysics(int numBalls, Bounds3 sceneBounds, Bounds3 ballsBounds, flo
     printf("Grid layout: %d balls per row, %d balls per layer, spacing: %.2f\n", ballsPerRow, ballsPerLayer, gridSpacing);
     
     kernel_initBalls<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, ballsBounds, minRadius, maxRadius,
-                                                        ballsPerLayer, ballsPerRow, ballsPerCol, gridSpacing, time(nullptr));
+                                                        ballsPerLayer, ballsPerRow, ballsPerCol, gridSpacing, (unsigned long)time(nullptr));
     
     // Check for kernel launch errors
     cudaError_t launchErr = cudaGetLastError();
@@ -1005,11 +1005,11 @@ void initCudaPhysics(int numBalls, Bounds3 sceneBounds, Bounds3 ballsBounds, flo
         std::vector<int> meshFirstTriangle;
         
         for (size_t i = 0; i < scene->getMeshCount(); i++) {
-            meshFirstTriangle.push_back(totalTriangles);
+            meshFirstTriangle.push_back((int)totalTriangles);
             const Mesh* mesh = scene->getMeshes()[i];
             const MeshData& data = mesh->getData();
-            totalVertices += data.positions.size() / 3;
-            totalTriangles += data.indices.size() / 3;
+            totalVertices += (int)(data.positions.size() / 3);
+            totalTriangles += (int)(data.indices.size() / 3);
         }
         
         printf("  Total vertices: %d, Total triangles: %d\n", totalVertices, totalTriangles);
@@ -1031,7 +1031,7 @@ void initCudaPhysics(int numBalls, Bounds3 sceneBounds, Bounds3 ballsBounds, flo
                 Bounds3 meshBounds(Empty);
                 
                 // Copy vertices
-                int numVerts = data.positions.size() / 3;
+                int numVerts = (int)(data.positions.size() / 3);
                 for (int v = 0; v < numVerts; v++) {
                     Vec3 pos(
                         data.positions[v * 3 + 0],
@@ -1045,7 +1045,7 @@ void initCudaPhysics(int numBalls, Bounds3 sceneBounds, Bounds3 ballsBounds, flo
                 meshBoundsUpper[i] = Vec4(meshBounds.maximum, 0.0f);
                 
                 // Copy triangle indices (offset by current vertex offset)
-                int numTris = data.indices.size() / 3;
+                int numTris = (int)(data.indices.size() / 3);
                 for (int t = 0; t < numTris; t++) {
                     hostTriIds[(triangleOffset + t) * 3 + 0] = data.indices[t * 3 + 0] + vertexOffset;
                     hostTriIds[(triangleOffset + t) * 3 + 1] = data.indices[t * 3 + 1] + vertexOffset;

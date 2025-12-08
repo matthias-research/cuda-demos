@@ -223,7 +223,8 @@ static void flipFaceVertical(unsigned char* data, int size) {
 
 bool Skybox::loadFromBMP(const char* filepath) {
     // Open BMP file
-    FILE* file = fopen(filepath, "rb");
+    FILE* file;
+    fopen_s(&file, filepath, "rb");
     if (!file) {
         printf("Failed to open skybox BMP file: %s\n", filepath);
         return false;

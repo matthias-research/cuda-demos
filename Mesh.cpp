@@ -61,15 +61,15 @@ bool Mesh::load(const std::string& filename) {
                 
                 // Apply scale
                 if (!node.scale.empty()) {
-                    data.transform[0] *= node.scale[0];
-                    data.transform[5] *= node.scale[1];
-                    data.transform[10] *= node.scale[2];
+                    data.transform[0] *= (float)node.scale[0];
+                    data.transform[5] *= (float)node.scale[1];
+                    data.transform[10] *= (float)node.scale[2];
                 }
                 
                 // Apply rotation (quaternion to matrix)
                 if (!node.rotation.empty()) {
-                    float qx = node.rotation[0], qy = node.rotation[1];
-                    float qz = node.rotation[2], qw = node.rotation[3];
+                    float qx = (float)node.rotation[0], qy = (float)node.rotation[1];
+                    float qz = (float)node.rotation[2], qw = (float)node.rotation[3];
                     
                     float m[9];
                     m[0] = 1 - 2*(qy*qy + qz*qz);
@@ -97,9 +97,9 @@ bool Mesh::load(const std::string& filename) {
                 
                 // Apply translation
                 if (!node.translation.empty()) {
-                    data.transform[12] = node.translation[0];
-                    data.transform[13] = node.translation[1];
-                    data.transform[14] = node.translation[2];
+                    data.transform[12] = (float)node.translation[0];
+                    data.transform[13] = (float)node.translation[1];
+                    data.transform[14] = (float)node.translation[2];
                 }
             }
             break;

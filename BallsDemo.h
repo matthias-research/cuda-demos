@@ -39,6 +39,10 @@ private:
     float minRadius = 0.25f;
     float maxRadius = 0.25f;
     
+    // Camera clipping planes
+    float cameraNear = 0.1f;
+    float cameraFar = 1000.0f;
+    
     // Simulation bounds (walls and floor, open ceiling)
     Bounds3 sceneBounds = Bounds3(Vec3(-600.0f, 0.0f, -310.0f), Vec3(600.0f, 600.0f, 310.0f));
     

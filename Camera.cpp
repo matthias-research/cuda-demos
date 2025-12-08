@@ -155,7 +155,7 @@ void Camera::setupMatrices(int width, int height)
     auto setPerspective = [](float* mat, float fov, float aspect, float near, float far) {
         for (int i = 0; i < 16; i++) mat[i] = 0.0f;
         mat[0] = mat[5] = mat[10] = mat[15] = 1.0f;
-        float f = 1.0f / tan(fov * 0.5f);
+        float f = 1.0f / tanf(fov * 0.5f);
         mat[0] = f / aspect;
         mat[5] = f;
         mat[10] = (far + near) / (near - far);
@@ -171,18 +171,18 @@ void Camera::setupMatrices(int width, int height)
         float fX = centerX - eyeX;
         float fY = centerY - eyeY;
         float fZ = centerZ - eyeZ;
-        float len = sqrt(fX*fX + fY*fY + fZ*fZ);
+        float len = sqrtf(fX*fX + fY*fY + fZ*fZ);
         fX /= len; fY /= len; fZ /= len;
         
         float sX = fY * upZ - fZ * upY;
         float sY = fZ * upX - fX * upZ;
         float sZ = fX * upY - fY * upX;
-        len = sqrt(sX*sX + sY*sY + sZ*sZ);
+        len = sqrtf(sX*sX + sY*sY + sZ*sZ);
         sX /= len; sY /= len; sZ /= len;
         
         float uX = sY * fZ - sZ * fY;
         float uY = sZ * fX - sX * fZ;
-        float uZ = sX * fY - sY * fX;
+        float uZ = (float)(sX * fY - sY * fX);
         
         mat[0] = sX;  mat[4] = sY;  mat[8] = sZ;   mat[12] = -(sX*eyeX + sY*eyeY + sZ*eyeZ);
         mat[1] = uX;  mat[5] = uY;  mat[9] = uZ;   mat[13] = -(uX*eyeX + uY*eyeY + uZ*eyeZ);
@@ -201,5 +201,5 @@ void Camera::setupMatrices(int width, int height)
     setPerspective(projMat,
                   fov * 3.14159f / 180.0f,
                   (float)width / height,
-                  0.1f, 1000.0f);
+                  0.01f, 100.0f);
 }
