@@ -39,4 +39,6 @@ public:
 
     float projMat[16];
     float viewMat[16];
+    float nearClip = 0.01f;
+    float farClip = 100.0f;
 };

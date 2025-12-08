@@ -199,9 +199,9 @@ BallsDemo::BallsDemo() : vao(0), vbo(0), ballShader(0), ballShadowShader(0),
     
     // Optionally load a static scene (uncomment when you have a .glb file)
     scene = new Scene();
-//    if (scene->load("D:/Models/City R5/cityR5.glb")) {
+    if (scene->load("D:/Models/City R5/cityR5.glb")) {
 
-    if (scene->load("assets/bunny.glb")) {
+//    if (scene->load("assets/bunny.glb")) {
         showScene = true;
         useBakedLighting = true;  // Enable baked lighting mode by default
     }
@@ -621,6 +621,10 @@ void BallsDemo::onKeyPress(unsigned char key) {
 void BallsDemo::render3D(int width, int height) {
     if (!camera) return;
     
+    // Apply camera clipping planes
+    camera->nearClip = cameraNear;
+    camera->farClip = cameraFar;
+    
     // Render directly to default framebuffer (screen)
     glViewport(0, 0, width, height);
     
@@ -673,7 +677,7 @@ void BallsDemo::render3D(int width, int height) {
     // Projection matrix
     float fov = camera->fov * 3.14159f / 180.0f;
     float aspect = (float)width / height;
-    float near = cameraNear, far = cameraFar;
+    float near = camera->nearClip, far = camera->farClip;
     for (int i = 0; i < 16; i++) projection[i] = 0.0f;
     float f = 1.0f / tan(fov * 0.5f);
     projection[0] = f / aspect;

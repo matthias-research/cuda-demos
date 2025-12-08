@@ -201,5 +201,5 @@ void Camera::setupMatrices(int width, int height)
     setPerspective(projMat,
                   fov * 3.14159f / 180.0f,
                   (float)width / height,
-                  0.01f, 100.0f);
+                  nearClip, farClip);
 }
