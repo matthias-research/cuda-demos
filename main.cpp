@@ -48,6 +48,52 @@ float lastTime = 0.0f;
 // GPU info (cached at startup)
 std::string gpuName;
 
+// Video recording
+FILE* ffmpegPipe = nullptr;
+GLbyte* pixelBuffer = nullptr;
+int pixelBufferSize = 0;
+bool isRecording = false;
+
+void startRecording() {
+    char cmd[1024];
+    sprintf_s(cmd, 1024, "ffmpeg -r 30 -f rawvideo -pix_fmt rgba -s %ix%i -i - -threads 0 -preset fast -y -pix_fmt yuv420p -crf 21 -vf vflip output.mp4",
+        windowWidth, windowHeight);
+    
+    ffmpegPipe = _popen(cmd, "wb");
+    if (ffmpegPipe) {
+        isRecording = true;
+        std::cout << "Started recording to output.mp4 (" << windowWidth << "x" << windowHeight << " @ 30fps)\n";
+    } else {
+        std::cerr << "Failed to start ffmpeg. Make sure ffmpeg is installed and in PATH.\n";
+        isRecording = false;
+    }
+}
+
+void stopRecording() {
+    if (ffmpegPipe) {
+        _pclose(ffmpegPipe);
+        ffmpegPipe = nullptr;
+        std::cout << "Recording stopped. Video saved to output.mp4\n";
+    }
+    isRecording = false;
+}
+
+void captureFrame() {
+    if (!isRecording || !ffmpegPipe) return;
+    
+    int bufferSize = windowWidth * windowHeight * 4;
+    if (pixelBufferSize != bufferSize) {
+        if (pixelBuffer != nullptr)
+            free(pixelBuffer);
+        pixelBuffer = (GLbyte*)malloc(bufferSize);
+        pixelBufferSize = bufferSize;
+    }
+    
+    glReadBuffer(GL_BACK);
+    glReadPixels(0, 0, windowWidth, windowHeight, GL_RGBA, GL_UNSIGNED_BYTE, pixelBuffer);
+    fwrite(pixelBuffer, bufferSize, 1, ffmpegPipe);
+}
+
 void initPixelBuffer() {
     if (pbo != 0) {
         // Clean up old buffer if it exists
@@ -161,6 +207,11 @@ void display() {
         
         ImGui::Text("FPS: %.1f", fps);
         ImGui::Text("GPU: %s", gpuName.c_str());
+        if (isRecording) {
+            ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "[REC]");
+            ImGui::SameLine();
+            ImGui::Text("Recording to output.mp4");
+        }
         ImGui::Separator();
         
         ImGui::Text("Demo Selection:");
@@ -184,6 +235,12 @@ void display() {
     }
     
     glutSwapBuffers();
+    
+    // Capture frame for video recording
+    if (isRecording) {
+        captureFrame();
+    }
+    
     glutPostRedisplay();
 }
 
@@ -211,6 +268,14 @@ void keyboard(unsigned char key, int x, int y) {
         case 'H':
             showUI = !showUI;
             std::cout << "UI " << (showUI ? "shown" : "hidden") << "\n";
+            break;
+        case 'r':
+        case 'R':
+            if (isRecording) {
+                stopRecording();
+            } else {
+                startRecording();
+            }
             break;
         case 27: // ESC
             exit(0);
@@ -402,6 +467,15 @@ void reshape(int w, int h) {
 }
 
 void cleanup() {
+    // Stop recording if active
+    if (isRecording) {
+        stopRecording();
+    }
+    if (pixelBuffer != nullptr) {
+        free(pixelBuffer);
+        pixelBuffer = nullptr;
+    }
+    
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGLUT_Shutdown();
     ImGui::DestroyContext();
@@ -418,6 +492,7 @@ int main(int argc, char** argv) {
     std::cout << "  1: 3D Bouncing Balls (OpenGL)\n";
     std::cout << "  2: Mandelbrot Fractal (CUDA)\n";
     std::cout << "  H: Hide/show UI\n";
+    std::cout << "  R: Start/stop video recording\n";
     std::cout << "  ESC: Exit\n\n";
     std::cout << "3D Camera (Balls demo):\n";
     std::cout << "  WASD: Move, Q/E: Up/Down\n";

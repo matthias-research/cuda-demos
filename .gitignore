@@ -47,6 +47,8 @@ $RECYCLE.BIN/
 *.cubin
 *.fatbin
 
+*.mp4
+
 cliff.glb
 *.blend1
 imgui.ini

@@ -65,6 +65,7 @@ GPU-accelerated Mandelbrot set visualization. Features:
 - **1**: Switch to 3D Boxes demo
 - **2**: Switch to Mandelbrot Fractal demo
 - **H**: Hide/show UI panel
+- **R**: Start/stop video recording (requires ffmpeg)
 - **ESC**: Exit
 
 ### 3D Camera (Boxes Demo only)
@@ -79,6 +80,20 @@ GPU-accelerated Mandelbrot set visualization. Features:
 - **Mouse Wheel**: Zoom
 - **Click and Drag**: Pan
 - **Arrow Keys**: Pan
+
+## Video Recording
+
+Press **R** to start/stop recording demos to MP4 video. 
+
+**Requirements:**
+- Download ffmpeg: https://ffmpeg.org/download.html
+- Add ffmpeg to your system PATH, or place `ffmpeg.exe` in the project directory
+- Videos save as `output.mp4` (30 FPS, overwritten each recording)
+
+**Verification:**
+```powershell
+ffmpeg -version  # Should display ffmpeg version info
+```
 
 ## Troubleshooting
 
