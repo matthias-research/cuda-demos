@@ -226,6 +226,11 @@ void display() {
         }
         
         ImGui::Separator();
+        if (ImGui::Button("Reset Demo", ImVec2(200, 0))) {
+            demos[currentDemoIndex]->reset();
+        }
+        
+        ImGui::Separator();
         ImGui::Text("Controls:");
         
         // Render current demo's UI

@@ -43,7 +43,6 @@ struct BallsDeviceData {
         meshesBvh.free();
         trianglesBvh.free();
         raycastDepths.free();
-        ballDepths.free();
     }
     
     size_t allocationSize() const
@@ -69,7 +68,6 @@ struct BallsDeviceData {
         s += meshTriBoundsLower.allocationSize();
         s += meshTriBoundsUpper.allocationSize();
         s += raycastDepths.allocationSize();
-        s += ballDepths.allocationSize();
         return s;
     }
     
@@ -118,7 +116,6 @@ struct BallsDeviceData {
     float* vboData = nullptr;      // Interleaved: pos(3), radius(1), color(3), quat(4), pad(3) = 14 floats
 
     DeviceBuffer<float> raycastDepths;
-    DeviceBuffer<float> ballDepths;
 };
 
 // Factory functions for BallsDeviceData
@@ -818,14 +815,6 @@ __device__ bool kernel_rayTriangleIntersection(
     return true;
 }
 
-// Copy shadow depths from ballDepths buffer into VBO at offset 11
-__global__ void kernel_writeShadowDepthsToVBO(BallsDeviceData data) {
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (idx >= data.numBalls) return;
-    
-    float* ballData = data.vboData + idx * 14;
-    ballData[11] = data.ballDepths.buffer[idx];
-}
 
 // Kernel: Ball-mesh collision using BVH
 __device__ bool kernel_raycastMesh(BallsDeviceData data, int meshIdx, Ray ray, float* minT) {
@@ -897,15 +886,21 @@ __global__ void kernel_raycast(BallsDeviceData data, bool useBalls, Ray ray)
     if (idx >= data.numBalls) 
         return;
 
+    float* minT = &data.raycastDepths[0];
 
     if (useBalls) // origin is ball position
     {
         float* ballData = data.vboData + idx * 14;
+
         Vec3 pos(ballData[0], ballData[1], ballData[2]);
         ray.orig = pos;
+
+        minT = &ballData[11];
+
+        if (idx == 0)
+            printf("ray %f %f %f, %f %f %f\n", ray.orig.x, ray.orig.y, ray.orig.z, ray.dir.x, ray.dir.y, ray.dir.z);
     }
 
-    float* minT = useBalls ? data.ballDepths.buffer + idx : &data.raycastDepths.buffer[0];
     *minT = MaxFloat;
 
     int stack[64];
@@ -1241,14 +1236,12 @@ void BallsDemo::updateCudaPhysics(float dt,
         kernel_integrateQuaternions << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, sdt);
     }
 
-    // compute ball shadow depths
-
-    deviceData->ballDepths.resize(deviceData->numBalls, false);
+    // compute ball shadow depths (writes directly to VBO at offset 11)
     Ray sunRay(Vec3(Zero), demoDesc.sunDirection);
     kernel_raycast<<<deviceData->numBalls / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK>>>(*deviceData, true, sunRay);
 
-    // Write shadow depths into VBO for shader access
-    kernel_writeShadowDepthsToVBO<<<numBlocks, THREADS_PER_BLOCK>>>(*deviceData);
+    // Ensure all CUDA operations complete before unmapping VBO
+    cudaDeviceSynchronize();
 
     // Unmap VBO
     cudaGraphicsUnmapResources(1, &vboResource, 0);

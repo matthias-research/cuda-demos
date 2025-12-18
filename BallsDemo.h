@@ -38,8 +38,8 @@ struct BallsDemoDescriptor
     float cameraNear = 10.0f;
     float cameraFar = 10000.0f;
 
-    Vec3 sunDirection = Vec3(-0.1f, -0.1f, -0.3f).normalized();
-    
+    Vec3 sunDirection = Vec3(0.3f, 0.8f, 0.3f).normalized();
+
     // Camera position and orientation
     Vec3 cameraPos = Vec3(0.0f, 100.0f, 200.0f);
     Vec3 cameraLookAt = Vec3(0.0f, 0.0f, 0.0f);
@@ -47,6 +47,7 @@ struct BallsDemoDescriptor
     Bounds3 sceneBounds = Bounds3(Vec3(-600.0f, 0.0f, -310.0f), Vec3(600.0f, 600.0f, 310.0f));
     Bounds3 ballsBounds = Bounds3(Vec3(-200.0f, 250.0f, -100.0f), Vec3(200.0f, 300.0f, 100.0f));
     std::string fileName = "";
+    bool useBakedLighting = false;
 
     void setupCityScene()
     {
@@ -66,28 +67,29 @@ struct BallsDemoDescriptor
         cameraNear = 10.0f;
         cameraFar = 10000.0f;
 
-        sunDirection = Vec3(-0.1f, -0.1f, -0.3f).normalized();
+        sunDirection = Vec3(0.3f, 0.8f, 0.3f).normalized();
 
         sceneBounds = Bounds3(Vec3(-600.0f, 0.0f, -310.0f), Vec3(600.0f, 600.0f, 310.0f));
         ballsBounds = Bounds3(Vec3(-200.0f, 250.0f, -100.0f), Vec3(200.0f, 300.0f, 100.0f));
         
         cameraPos = Vec3(0.0f, 100.0f, 200.0f);
         cameraLookAt = Vec3(0.0f, 50.0f, 0.0f);
+        useBakedLighting = true;
     }
 
     void setupBunnyScene()
     {
         fileName = "bunny.glb";
 
-        numBalls = 1000;
+        numBalls = 500;
         gravity = 9.8f;
         bounce = 0.85f;  // Coefficient of restitution
         friction = 1.0f; // no friction
         terminalVelocity = 10.0f;
 
         // Ball size parameters
-        minRadius = 0.25f;
-        maxRadius = 0.45f;
+        minRadius = 0.5f;
+        maxRadius = 1.0f;
 
         // Camera clipping planes
         cameraNear = 0.1f;
@@ -95,11 +97,14 @@ struct BallsDemoDescriptor
 
         sunDirection = Vec3(-0.1f, -0.1f, -0.3f).normalized();
 
-        sceneBounds = Bounds3(Vec3(-50.0f, 0.0f, -50.0f), Vec3(50.0f, 50.0f, 50.0f));
-        ballsBounds = Bounds3(Vec3(-40.0f, 30.0f, -40.0f), Vec3(40.0f, 300.0f, 40.0f));
+        sceneBounds = Bounds3(Vec3(-20.0f, 0.0f, -20.0f), Vec3(20.0f, 50.0f, 20.0f));
+        ballsBounds = Bounds3(Vec3(-15.0f, 10.0f, -15.0f), Vec3(15.0f, 300.0f, 15.0f));
         
         cameraPos = Vec3(0.0f, 30.0f, 50.0f);
         cameraLookAt = Vec3(0.0f, 15.0f, 0.0f);
+        useBakedLighting = false;
+
+        sunDirection = Vec3(0.3f, 1.0f, 0.1f).normalized();
     }
 };
 
@@ -142,7 +147,6 @@ private:
     Scene* scene = nullptr;
     Renderer* renderer = nullptr;
     bool showScene = false;
-    bool useBakedLighting = false;
     bool sceneLoaded = false;  // Flag for lazy loading
     
     // Skybox

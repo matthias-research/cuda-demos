@@ -26,7 +26,7 @@ out vec3 eyePos;
 out vec4 quat;
 out vec3 viewRight;
 out vec3 viewUp;
-out float shadowDepth;
+flat out float shadowDepth;
 
 void main()
 {
@@ -62,7 +62,7 @@ in float radius;
 in vec3 eyePos;
 in vec4 quat;
 in vec3 viewRight;
-in float shadowDepth;
+flat in float shadowDepth;
 
 out vec4 fragColor;
 
@@ -89,7 +89,7 @@ void main()
     // Use view matrix axes directly (robust for all camera orientations)
     vec3 axisZ = normalize(fragPos - viewPos);
     vec3 axisX = normalize(viewRight);
-    vec3 axisY = cross(axisZ, axisX);
+    vec3 axisY = cross(axisX, axisZ);
     
     // Calculate surface position using view matrix axes
     vec3 localPos = radius * (coord.x * axisX + coord.y * axisY - h * axisZ);
@@ -99,7 +99,7 @@ void main()
     vec3 normal = normalize(localPos);
     
     // Rotate normal by quaternion
-    vec3 rotNormal = qtransform(quat, normal);
+    vec3 rotNormal = qtransform(quat, vec3(normal.x, -normal.y, normal.z));
     
     // Create classic beach ball pattern with 6 colored segments
     float angle = atan(rotNormal.z, rotNormal.x);
@@ -236,7 +236,6 @@ void BallsDemo::ensureSceneLoaded() {
         printf("Loading scene: %s\n", demoDesc.fileName.c_str());
         if (scene->load("assets/" + demoDesc.fileName)) {
             showScene = true;
-            useBakedLighting = true;  // Enable baked lighting mode by default
             printf("Scene loaded successfully!\n");
         } else {
             printf("Failed to load scene: %s\n", demoDesc.fileName.c_str());
@@ -585,8 +584,8 @@ void BallsDemo::renderUI() {
         ImGui::Text("  Meshes loaded: %zu", scene->getMeshCount());
         ImGui::Checkbox("Show Scene##balls", &showScene);
         if (renderer) {
-            ImGui::Checkbox("Use Baked Lighting##balls", &useBakedLighting);
-            if (!useBakedLighting) {
+            ImGui::Checkbox("Use Baked Lighting##balls", &demoDesc.useBakedLighting);
+            if (!demoDesc.useBakedLighting) {
                 ImGui::SliderFloat("Mesh Ambient##balls", &renderer->getMaterial().ambientStrength, 0.0f, 1.0f);
                 ImGui::SliderFloat("Mesh Specular##balls", &renderer->getMaterial().specularStrength, 0.0f, 2.0f);
             }
@@ -606,11 +605,6 @@ void BallsDemo::renderUI() {
     }
     
     ImGui::Separator();
-    if (ImGui::Button("Reset Simulation##balls", ImVec2(200, 0))) {
-        reset();
-        ballCountChanged = true;
-    }
-    
     if (ImGui::Button("Reset View##balls", ImVec2(200, 0))) {
         if (camera) camera->resetView();
     }
@@ -642,12 +636,9 @@ void BallsDemo::renderUI() {
 }
 
 void BallsDemo::reset() {
-    demoDesc.gravity = 9.8f;
-    demoDesc.bounce = 0.85f;
-    demoDesc.friction = 0.99f;
-    demoDesc.sceneBounds = Bounds3(Vec3(-10.0f, 0.0f, -10.0f), Vec3(10.0f, 20.0f, 10.0f));
-    demoDesc.ballsBounds = Bounds3(Vec3(-8.0f, 5.0f, -8.0f), Vec3(8.0f, 15.0f, 8.0f));
-    lightDir = -Vec3(0.3f, 1.0f, 0.5f).normalized();
+    // Reset to descriptor defaults
+    // (descriptor values are set in setupCityScene(), setupBunnyScene(), etc.)
+    // Currently just reinitializing with current descriptor values
     
     // Reinitialize CUDA physics
     if (cudaVboResource) {
@@ -656,7 +647,10 @@ void BallsDemo::reset() {
     }
     initBalls();
     
-    if (camera) camera->resetView();
+    // Reset camera to descriptor settings
+    if (camera) {
+        camera->lookAt(demoDesc.cameraPos, demoDesc.cameraLookAt);
+    }
 }
 
 void BallsDemo::onKeyPress(unsigned char key) {
@@ -773,7 +767,7 @@ void BallsDemo::render3D(int width, int height) {
         glDisable(GL_CULL_FACE);
         
         // Set baked lighting mode
-        renderer->setUseBakedLighting(useBakedLighting);
+        renderer->setUseBakedLighting(demoDesc.useBakedLighting);
         
         // Create shadow map struct with light matrix from renderShadows
         Renderer::ShadowMap shadowMapData;
