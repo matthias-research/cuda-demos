@@ -42,7 +42,8 @@ struct BallsDeviceData {
         numMeshTriangles = 0;
         meshesBvh.free();
         trianglesBvh.free();
-        floatBuffer.free();
+        raycastDepths.free();
+        ballDepths.free();
     }
     
     size_t allocationSize() const
@@ -67,7 +68,8 @@ struct BallsDeviceData {
         s += meshBoundsUpper.allocationSize();
         s += meshTriBoundsLower.allocationSize();
         s += meshTriBoundsUpper.allocationSize();
-        s += floatBuffer.allocationSize();
+        s += raycastDepths.allocationSize();
+        s += ballDepths.allocationSize();
         return s;
     }
     
@@ -115,11 +117,20 @@ struct BallsDeviceData {
     // VBO data (mapped from OpenGL)
     float* vboData = nullptr;      // Interleaved: pos(3), radius(1), color(3), quat(4), pad(3) = 14 floats
 
-    DeviceBuffer<float> floatBuffer; // General purpose float buffer
+    DeviceBuffer<float> raycastDepths;
+    DeviceBuffer<float> ballDepths;
 };
 
-// Global device data (stored on host, contains device pointers)
-static BallsDeviceData g_deviceData;
+// Factory functions for BallsDeviceData
+BallsDeviceData* createBallsDeviceData() {
+    return new BallsDeviceData();
+}
+
+void deleteBallsDeviceData(BallsDeviceData* data) {
+    if (data) {
+        delete data;
+    }
+}
 
 // Helper device functions
 __device__ inline int hashPosition(const Vec3& pos, float gridSpacing, float worldOrig) {
@@ -807,19 +818,27 @@ __device__ bool kernel_rayTriangleIntersection(
     return true;
 }
 
+// Copy shadow depths from ballDepths buffer into VBO at offset 11
+__global__ void kernel_writeShadowDepthsToVBO(BallsDeviceData data) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx >= data.numBalls) return;
+    
+    float* ballData = data.vboData + idx * 14;
+    ballData[11] = data.ballDepths.buffer[idx];
+}
 
 // Kernel: Ball-mesh collision using BVH
-__device__ void kernel_raycastMesh(BallsDeviceData data, int meshIdx, Ray ray) {
+__device__ bool kernel_raycastMesh(BallsDeviceData data, int meshIdx, Ray ray, float* minT) {
 
     int rootNode = data.trianglesBvh.mRootNodes[meshIdx];
-    if (rootNode < 0) return;
+    if (rootNode < 0)
+        return false;
         
     int stack[64];
     stack[0] = rootNode;
     int stackCount = 1;
+    bool hit = false;
 
-    float& minT = data.floatBuffer[0]; 
-    
     while (stackCount > 0) {
         int nodeIndex = stack[--stackCount];
 
@@ -852,9 +871,10 @@ __device__ void kernel_raycastMesh(BallsDeviceData data, int meshIdx, Ray ray) {
 
                 if (kernel_rayTriangleIntersection(ray, v0, v1, v2, t, u, v))
                 {
-                    if (t > 0.0f && t < minT)
+                    hit = true;
+                    if (t > 0.0f && t < *minT)
                     {
-                        minT = t;
+                        *minT = t;
                     }
                 }
             }
@@ -867,18 +887,30 @@ __device__ void kernel_raycastMesh(BallsDeviceData data, int meshIdx, Ray ray) {
             }
         }
     }
+    return hit;
 }
 
 
-__global__ void kernel_raycastMeshes(BallsDeviceData data, Ray ray)
+__global__ void kernel_raycast(BallsDeviceData data, bool useBalls, Ray ray)
 {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx >= data.numBalls) 
+        return;
+
+
+    if (useBalls) // origin is ball position
+    {
+        float* ballData = data.vboData + idx * 14;
+        Vec3 pos(ballData[0], ballData[1], ballData[2]);
+        ray.orig = pos;
+    }
+
+    float* minT = useBalls ? data.ballDepths.buffer + idx : &data.raycastDepths.buffer[0];
+    *minT = MaxFloat;
 
     int stack[64];
     stack[0] = data.meshesBvh.mRootNodes[0];
     int count = 1;
-
-    float& minT = data.floatBuffer[0];
-    minT = MaxFloat;
 
     while (count)
     {
@@ -896,7 +928,7 @@ __global__ void kernel_raycastMeshes(BallsDeviceData data, Ray ray)
 
            if (lower.b)
            {
-               kernel_raycastMesh(data, leftIndex, ray);
+               kernel_raycastMesh(data, leftIndex, ray, minT);
            }
            else
            {
@@ -909,44 +941,52 @@ __global__ void kernel_raycastMeshes(BallsDeviceData data, Ray ray)
 
 
 
+
 // Host functions callable from BallsDemo.cpp
 
 static BVHBuilder* g_bvhBuilder = nullptr;
 
-void initCudaPhysics(int numBalls, Bounds3 sceneBounds, Bounds3 ballsBounds, float minRadius, float maxRadius, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene) {
-    g_deviceData.numBalls = numBalls;
-    g_deviceData.worldOrig = -100.0f;
+void BallsDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene) {
+    // Ensure any previous CUDA operations are complete
+    cudaDeviceSynchronize();
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA error before init: %s\n", cudaGetErrorString(err));
+    }
+    
+    deviceData->numBalls = demoDesc.numBalls;
+    deviceData->worldOrig = -100.0f;
     g_bvhBuilder = bvhBuilder;
     
     // Use provided maximum radius
-    g_deviceData.maxRadius = maxRadius;
-    g_deviceData.gridSpacing = 2.5f * maxRadius;
+    deviceData->maxRadius = demoDesc.maxRadius;
+    deviceData->gridSpacing = 2.5f * demoDesc.maxRadius;
     
     // Allocate physics arrays using DeviceBuffer
-    g_deviceData.vel.resize(numBalls, false);
-    g_deviceData.prevPos.resize(numBalls, false);
-    g_deviceData.angVel.resize(numBalls, false);
-    g_deviceData.radii.resize(numBalls, false);
+    deviceData->vel.resize(demoDesc.numBalls, false);
+    deviceData->prevPos.resize(demoDesc.numBalls, false);
+    deviceData->angVel.resize(demoDesc.numBalls, false);
+    deviceData->radii.resize(demoDesc.numBalls, false);
     
     // Allocate hash grid using DeviceBuffer
-    g_deviceData.hashVals.resize(numBalls, false);
-    g_deviceData.hashIds.resize(numBalls, false);
-    g_deviceData.hashCellFirst.resize(HASH_SIZE, false);
-    g_deviceData.hashCellLast.resize(HASH_SIZE, false);
+    deviceData->hashVals.resize(demoDesc.numBalls, false);
+    deviceData->hashIds.resize(demoDesc.numBalls, false);
+    deviceData->hashCellFirst.resize(HASH_SIZE, false);
+    deviceData->hashCellLast.resize(HASH_SIZE, false);
     
     // Allocate BVH bounds buffers
-    g_deviceData.ballBoundsLowers.resize(numBalls, false);
-    g_deviceData.ballBoundsUppers.resize(numBalls, false);
+    deviceData->ballBoundsLowers.resize(demoDesc.numBalls, false);
+    deviceData->ballBoundsUppers.resize(demoDesc.numBalls, false);
     
     // Allocate collision correction buffers
-    g_deviceData.posCorr.resize(numBalls, false);
-    g_deviceData.newAngVel.resize(numBalls, false);
+    deviceData->posCorr.resize(demoDesc.numBalls, false);
+    deviceData->newAngVel.resize(demoDesc.numBalls, false);
     
     // Initialize memory
-    g_deviceData.vel.setZero();
-    g_deviceData.angVel.setZero();
-    g_deviceData.hashCellFirst.setZero();
-    g_deviceData.hashCellLast.setZero();
+    deviceData->vel.setZero();
+    deviceData->angVel.setZero();
+    deviceData->hashCellFirst.setZero();
+    deviceData->hashCellLast.setZero();
     
     // Register VBO with CUDA
     cudaGraphicsGLRegisterBuffer(vboResource, vbo, cudaGraphicsMapFlagsWriteDiscard);
@@ -958,11 +998,11 @@ void initCudaPhysics(int numBalls, Bounds3 sceneBounds, Bounds3 ballsBounds, flo
     cudaGraphicsResourceGetMappedPointer((void**)&d_vboData, &numBytes, *vboResource);
     
     // Update VBO pointer
-    g_deviceData.vboData = d_vboData;
+    deviceData->vboData = d_vboData;
     
     // Calculate grid layout parameters based on ballsBounds
-    float gridSpacing = 2.0f * maxRadius;  // Space between ball centers
-    Vec3 spawnSize = ballsBounds.maximum - ballsBounds.minimum;
+    float gridSpacing = 2.0f * demoDesc.maxRadius;  // Space between ball centers
+    Vec3 spawnSize = demoDesc.ballsBounds.maximum - demoDesc.ballsBounds.minimum;
     float usableWidth = spawnSize.x - 2.0f * gridSpacing;  // Leave margin
     float usableDepth = spawnSize.z - 2.0f * gridSpacing;
     int ballsPerRow = (int)(usableWidth / gridSpacing);
@@ -972,11 +1012,11 @@ void initCudaPhysics(int numBalls, Bounds3 sceneBounds, Bounds3 ballsBounds, flo
     int ballsPerLayer = ballsPerRow * ballsPerCol;
     
     // Initialize balls with grid data
-    int numBlocks = (numBalls + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-    printf("Launching kernel_initBalls with %d blocks, %d threads per block, %d total balls\n", numBlocks, THREADS_PER_BLOCK, numBalls);
+    int numBlocks = (demoDesc.numBalls + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+    printf("Launching kernel_initBalls with %d blocks, %d threads per block, %d total balls\n", numBlocks, THREADS_PER_BLOCK, demoDesc.numBalls);
     printf("Grid layout: %d balls per row, %d balls per layer, spacing: %.2f\n", ballsPerRow, ballsPerLayer, gridSpacing);
     
-    kernel_initBalls<<<numBlocks, THREADS_PER_BLOCK>>>(g_deviceData, ballsBounds, minRadius, maxRadius,
+    kernel_initBalls<<<numBlocks, THREADS_PER_BLOCK>>>(*deviceData, demoDesc.ballsBounds, demoDesc.minRadius, demoDesc.maxRadius,
                                                         ballsPerLayer, ballsPerRow, ballsPerCol, gridSpacing, (unsigned long)time(nullptr));
     
     // Check for kernel launch errors
@@ -1057,45 +1097,45 @@ void initCudaPhysics(int numBalls, Bounds3 sceneBounds, Bounds3 ballsBounds, flo
             }
             
             // Upload to GPU using DeviceBuffer::set (combines resize + memcpy)
-            g_deviceData.numMeshes = (int)scene->getMeshCount();
-            g_deviceData.meshFirstTriangle.set(meshFirstTriangle);
-            g_deviceData.meshVertices.set(hostVertices);
-            g_deviceData.meshTriIds.set(hostTriIds);
-            g_deviceData.numMeshTriangles = totalTriangles;
+            deviceData->numMeshes = (int)scene->getMeshCount();
+            deviceData->meshFirstTriangle.set(meshFirstTriangle);
+            deviceData->meshVertices.set(hostVertices);
+            deviceData->meshTriIds.set(hostTriIds);
+            deviceData->numMeshTriangles = totalTriangles;
 
-            g_deviceData.meshBoundsLower.set(meshBoundsLower);
-            g_deviceData.meshBoundsUpper.set(meshBoundsUpper);
+            deviceData->meshBoundsLower.set(meshBoundsLower);
+            deviceData->meshBoundsUpper.set(meshBoundsUpper);
             
             // Allocate triangle bounds buffers
-            g_deviceData.meshTriBoundsLower.resize(totalTriangles, false);
-            g_deviceData.meshTriBoundsUpper.resize(totalTriangles, false);
+            deviceData->meshTriBoundsLower.resize(totalTriangles, false);
+            deviceData->meshTriBoundsUpper.resize(totalTriangles, false);
             
             // Compute triangle bounds
             int numTriBlocks = (totalTriangles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-            kernel_computeTriangleBounds<<<numTriBlocks, THREADS_PER_BLOCK>>>(g_deviceData);
+            kernel_computeTriangleBounds<<<numTriBlocks, THREADS_PER_BLOCK>>>(*deviceData);
             cudaDeviceSynchronize();
 
             // Build BVH for meshes
             if (g_bvhBuilder) {
-                printf("Building BVH for %d meshes...\n", g_deviceData.numMeshes);
-                g_bvhBuilder->build(g_deviceData.meshesBvh,
-                    g_deviceData.meshBoundsLower.buffer,
-                    g_deviceData.meshBoundsUpper.buffer,
-                    g_deviceData.numMeshes,
+                printf("Building BVH for %d meshes...\n", deviceData->numMeshes);
+                g_bvhBuilder->build(deviceData->meshesBvh,
+                    deviceData->meshBoundsLower.buffer,
+                    deviceData->meshBoundsUpper.buffer,
+                    deviceData->numMeshes,
                     nullptr, 0); // No grouping
-                printf("Mesh BVH built: %d nodes\n", g_deviceData.meshesBvh.mNumNodes);
+                printf("Mesh BVH built: %d nodes\n", deviceData->meshesBvh.mNumNodes);
             }
             
             // Build BVH for triangles
             if (g_bvhBuilder) {
                 printf("Building BVH for %d triangles...\n", totalTriangles);
-                g_bvhBuilder->build(g_deviceData.trianglesBvh,
-                    g_deviceData.meshTriBoundsLower.buffer,
-                    g_deviceData.meshTriBoundsUpper.buffer,
+                g_bvhBuilder->build(deviceData->trianglesBvh,
+                    deviceData->meshTriBoundsLower.buffer,
+                    deviceData->meshTriBoundsUpper.buffer,
                     totalTriangles,
-                    g_deviceData.meshFirstTriangle.buffer,
-                    g_deviceData.numMeshes);
-                printf("Triangle BVH built: %d nodes\n", g_deviceData.trianglesBvh.mNumNodes);
+                    deviceData->meshFirstTriangle.buffer,
+                    deviceData->numMeshes);
+                printf("Triangle BVH built: %d nodes\n", deviceData->trianglesBvh.mNumNodes);
             }
             
             printf("Mesh collision data loaded successfully!\n");
@@ -1103,17 +1143,20 @@ void initCudaPhysics(int numBalls, Bounds3 sceneBounds, Bounds3 ballsBounds, flo
     }
     
     // Check for errors
-    cudaError_t err = cudaGetLastError();
+    err = cudaGetLastError();
     if (err != cudaSuccess) {
         printf("CUDA initialization error: %s\n", cudaGetErrorString(err));
     }
+    
+    // Synchronize to ensure initialization completes
+    cudaDeviceSynchronize();
 }
 
-void updateCudaPhysics(float dt, Vec3 gravity, float friction, float terminalVelocity, float bounce, Bounds3 sceneBounds, 
+void BallsDemo::updateCudaPhysics(float dt,
                                    cudaGraphicsResource* vboResource, bool useBVH) {
-    if (g_deviceData.numBalls == 0) return;
+    if (deviceData->numBalls == 0) return;
     
-    int numBlocks = (g_deviceData.numBalls + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+    int numBlocks = (deviceData->numBalls + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
     
     // Map VBO
     float* d_vboData;
@@ -1122,21 +1165,21 @@ void updateCudaPhysics(float dt, Vec3 gravity, float friction, float terminalVel
     cudaGraphicsResourceGetMappedPointer((void**)&d_vboData, &numBytes, vboResource);
     
     // Update VBO pointer
-    g_deviceData.vboData = d_vboData;
+    deviceData->vboData = d_vboData;
     
 
     if (useBVH) {
         // BVH-based collision detection
 
         // Compute bounds for each ball
-        kernel_computeBallBounds << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData);
+        kernel_computeBallBounds << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData);
 
         // Build BVH
         if (g_bvhBuilder) {
-            g_bvhBuilder->build(g_deviceData.ballsBvh,
-                g_deviceData.ballBoundsLowers.buffer,
-                g_deviceData.ballBoundsUppers.buffer,
-                g_deviceData.numBalls,
+            g_bvhBuilder->build(deviceData->ballsBvh,
+                deviceData->ballBoundsLowers.buffer,
+                deviceData->ballBoundsUppers.buffer,
+                deviceData->numBalls,
                 nullptr,  // No grouping
                 0);
         }
@@ -1144,17 +1187,17 @@ void updateCudaPhysics(float dt, Vec3 gravity, float friction, float terminalVel
     else {
         // Hash grid collision detection
 
-        kernel_fillHash << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData);
+        kernel_fillHash << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData);
 
         // Sort by hash
-        thrust::device_ptr<int> hashVals(g_deviceData.hashVals.buffer);
-        thrust::device_ptr<int> hashIds(g_deviceData.hashIds.buffer);
-        thrust::sort_by_key(hashVals, hashVals + g_deviceData.numBalls, hashIds);
+        thrust::device_ptr<int> hashVals(deviceData->hashVals.buffer);
+        thrust::device_ptr<int> hashIds(deviceData->hashIds.buffer);
+        thrust::sort_by_key(hashVals, hashVals + deviceData->numBalls, hashIds);
 
-        g_deviceData.hashCellFirst.setZero();
-        g_deviceData.hashCellLast.setZero();
+        deviceData->hashCellFirst.setZero();
+        deviceData->hashCellLast.setZero();
 
-        kernel_setupHash << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData);
+        kernel_setupHash << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData);
     }
 
     int numSubSteps = 5;
@@ -1165,40 +1208,48 @@ void updateCudaPhysics(float dt, Vec3 gravity, float friction, float terminalVel
     {
 
         // Run physics pipeline
-        kernel_integrate << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, sdt, gravity, friction, terminalVelocity);
+        kernel_integrate << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, sdt, Vec3(0.0f, -demoDesc.gravity, 0.0f), demoDesc.friction, demoDesc.terminalVelocity);
 
         // Zero correction buffers before collision detection
-        g_deviceData.posCorr.setZero();
-        g_deviceData.newAngVel.setZero();
+        deviceData->posCorr.setZero();
+        deviceData->newAngVel.setZero();
 
         if (useBVH) {
             // BVH-based collision (accumulates corrections)
-            kernel_ballCollision_BVH << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, bounce);
+            kernel_ballCollision_BVH << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, demoDesc.bounce);
         }
         else {
             // Hash grid collision detection
-            kernel_ballCollision << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, bounce);
+            kernel_ballCollision << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, demoDesc.bounce);
         }
 
         // Apply corrections with relaxation
         const float relaxation = 0.3f;
-        kernel_applyCorrections << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, relaxation);
+        kernel_applyCorrections << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, relaxation);
 
-        kernel_wallCollision << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, sceneBounds, bounce, subStep == 0);
+        kernel_wallCollision << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, demoDesc.sceneBounds, demoDesc.bounce, subStep == 0);
 
         // Ball-mesh collision
-        if (g_deviceData.numMeshTriangles > 0) {
-            float meshSearchRadius = 1.0f * g_deviceData.maxRadius;  // Search radius for mesh collisions
-            kernel_ballMeshesCollision << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, meshSearchRadius);
+        if (deviceData->numMeshTriangles > 0) {
+            float meshSearchRadius = 1.0f * deviceData->maxRadius;  // Search radius for mesh collisions
+            kernel_ballMeshesCollision << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, meshSearchRadius);
         }
 
         // Derive velocity from position change (PBD)
-        kernel_deriveVelocity << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, sdt);
+        kernel_deriveVelocity << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, sdt);
 
-        kernel_integrateQuaternions << <numBlocks, THREADS_PER_BLOCK >> > (g_deviceData, sdt);
+        kernel_integrateQuaternions << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, sdt);
     }
 
-    
+    // compute ball shadow depths
+
+    deviceData->ballDepths.resize(deviceData->numBalls, false);
+    Ray sunRay(Vec3(Zero), demoDesc.sunDirection);
+    kernel_raycast<<<deviceData->numBalls / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK>>>(*deviceData, true, sunRay);
+
+    // Write shadow depths into VBO for shader access
+    kernel_writeShadowDepthsToVBO<<<numBlocks, THREADS_PER_BLOCK>>>(*deviceData);
+
     // Unmap VBO
     cudaGraphicsUnmapResources(1, &vboResource, 0);
     
@@ -1209,39 +1260,49 @@ void updateCudaPhysics(float dt, Vec3 gravity, float friction, float terminalVel
     }
 }
 
-void cleanupCudaPhysics(cudaGraphicsResource* vboResource) {
-    if (g_deviceData.numBalls == 0) return;
+void BallsDemo::cleanupCudaPhysics(cudaGraphicsResource* vboResource) {
+    if (deviceData->numBalls == 0) return;
+    
+    // Synchronize CUDA to ensure all operations complete
+    cudaDeviceSynchronize();
+    
+    // Unmap VBO before cleanup if it's mapped
+    if (vboResource) {
+        cudaGraphicsUnmapResources(1, &vboResource, 0);
+    }
     
     // Free all device memory using DeviceBuffer::free()
-    g_deviceData.free();
+    deviceData->free();
+    
+    // CRITICAL: Reset numBalls to 0 to clear global state
+    // This prevents stray code from thinking old buffers are still valid
+    deviceData->numBalls = 0;
+    deviceData->numMeshTriangles = 0;
         
     // Zero out VBO pointer
-    g_deviceData.vboData = nullptr;
+    deviceData->vboData = nullptr;
     g_bvhBuilder = nullptr;
     
     // Unregister VBO
     if (vboResource) {
         cudaGraphicsUnregisterResource(vboResource);
     }
+    
+    // Final sync to ensure cleanup completes
+    cudaDeviceSynchronize();
 }
 
-bool cudaRaycast(const Ray& ray, float& minT)
+bool BallsDemo::cudaRaycast(const Ray& ray, float& minT)
 {
     // Upload ray to device
-    BallsDeviceData& data = g_deviceData;
-    if (data.numMeshTriangles == 0)
+    if (deviceData->numMeshTriangles == 0)
         return false;
-    data.floatBuffer.resize(1, false);
 
-    minT = MaxFloat;
+    int numRaycasts = 1;
+    deviceData->raycastDepths.resize(numRaycasts, false);
 
-    data.floatBuffer.setObject(0, minT);
-
-    // Launch raycast kernel
-    kernel_raycastMeshes<<<1, 1>>>(data, ray);
-    cudaDeviceSynchronize();
-
-    data.floatBuffer.getDeviceObject(minT, 0);
+    kernel_raycast<<<numRaycasts / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK>>>(*deviceData, false, ray);
+    deviceData->raycastDepths.getDeviceObject(minT, 0);
 
     return (minT < MaxFloat);
 }

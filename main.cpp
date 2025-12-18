@@ -20,7 +20,7 @@ unsigned int windowHeight = 1536;
 
 // Demo management
 std::vector<std::unique_ptr<Demo>> demos;
-int currentDemoIndex = 0;
+int currentDemoIndex = 1;  // Start with Bunny scene (faster to load)
 
 // Camera for 3D demos
 Camera camera;
@@ -219,6 +219,9 @@ void display() {
             if (ImGui::Button(demos[i]->getName(), ImVec2(200, 0))) {
                 currentDemoIndex = i;
                 std::cout << "Switched to: " << demos[i]->getName() << "\n";
+                if (demos[i]->is3D()) {
+                    static_cast<BallsDemo*>(demos[i].get())->applyCameraSettings();
+                }
             }
         }
         
@@ -256,12 +259,18 @@ void keyboard(unsigned char key, int x, int y) {
             if (currentDemoIndex != 0) {
                 currentDemoIndex = 0;
                 std::cout << "Switched to: " << demos[0]->getName() << "\n";
+                if (demos[0]->is3D()) {
+                    static_cast<BallsDemo*>(demos[0].get())->applyCameraSettings();
+                }
             }
             break;
         case '2':
             if (currentDemoIndex != 1) {
                 currentDemoIndex = 1;
                 std::cout << "Switched to: " << demos[1]->getName() << "\n";
+                if (demos[1]->is3D()) {
+                    static_cast<BallsDemo*>(demos[1].get())->applyCameraSettings();
+                }
             }
             break;
         case 'h':
@@ -610,7 +619,18 @@ int main(int argc, char** argv) {
     camera.speed = cameraSpeed;
     
     // Create demos
-    demos.push_back(std::make_unique<BallsDemo>());
+    BallsDemoDescriptor cityDesc;
+    cityDesc.setupCityScene();
+    auto cityDemo = std::make_unique<BallsDemo>(cityDesc);
+    cityDemo->setName("Balls: City");
+    demos.push_back(std::move(cityDemo));
+    
+    BallsDemoDescriptor bunnyDesc;
+    bunnyDesc.setupBunnyScene();
+    auto bunnyDemo = std::make_unique<BallsDemo>(bunnyDesc);
+    bunnyDemo->setName("Balls: Bunny");
+    demos.push_back(std::move(bunnyDemo));
+    
     demos.push_back(std::make_unique<MandelbrotDemo>());
     
     // Set camera for 3D demos

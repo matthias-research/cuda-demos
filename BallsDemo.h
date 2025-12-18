@@ -11,6 +11,7 @@
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 #include <vector>
+#include <string>
 
 struct Ball {
     Vec3 pos;       // Position
@@ -21,15 +22,9 @@ struct Ball {
     float radius;   // Size
 };
 
-// CUDA physics functions (implemented in BallsDemo.cu)
-void initCudaPhysics(int numBalls, Bounds3 sceneBounds, Bounds3 ballsBounds, float minRadius, float maxRadius, GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene);
-void updateCudaPhysics(float dt, Vec3 gravity, float friction, float terminalVelocity, float bounce, Bounds3 sceneBounds, cudaGraphicsResource* vboResource, bool useBVH);
-void cleanupCudaPhysics(cudaGraphicsResource* vboResource);
-bool cudaRaycast(const Ray& ray, float& t);
-
-class BallsDemo : public Demo {
-private:
-    int numBalls = 2000000;  // Start with more balls to showcase GPU power
+struct BallsDemoDescriptor 
+{
+    int numBalls = 1000000;  
     float gravity = 9.8f;
     float bounce = 0.85f;  // Coefficient of restitution
     float friction = 1.0f; // no friction
@@ -42,15 +37,81 @@ private:
     // Camera clipping planes
     float cameraNear = 10.0f;
     float cameraFar = 10000.0f;
-    
-    // Simulation bounds (walls and floor, open ceiling)
-    Bounds3 sceneBounds = Bounds3(Vec3(-600.0f, 0.0f, -310.0f), Vec3(600.0f, 600.0f, 310.0f));
-    
-    // Initial ball spawn region
-//    Bounds3 ballsBounds = Bounds3(Vec3(-100.0f, 100.0f, -200.0f), Vec3(0.0f, 300.0f, 200.0f));
-    Bounds3 ballsBounds = Bounds3(Vec3(-200.0f, 250.0f, -100.0f), Vec3(200.0f, 300.0f, 100.0f));
 
-    // OpenGL resources
+    Vec3 sunDirection = Vec3(-0.1f, -0.1f, -0.3f).normalized();
+    
+    // Camera position and orientation
+    Vec3 cameraPos = Vec3(0.0f, 100.0f, 200.0f);
+    Vec3 cameraLookAt = Vec3(0.0f, 0.0f, 0.0f);
+    
+    Bounds3 sceneBounds = Bounds3(Vec3(-600.0f, 0.0f, -310.0f), Vec3(600.0f, 600.0f, 310.0f));
+    Bounds3 ballsBounds = Bounds3(Vec3(-200.0f, 250.0f, -100.0f), Vec3(200.0f, 300.0f, 100.0f));
+    std::string fileName = "";
+
+    void setupCityScene()
+    {
+        fileName = "city.glb";
+
+        numBalls = 1000000;
+        gravity = 9.8f;
+        bounce = 0.85f;  // Coefficient of restitution
+        friction = 1.0f; // no friction
+        terminalVelocity = 10.0f;
+
+        // Ball size parameters
+        minRadius = 0.25f;
+        maxRadius = 0.25f;
+
+        // Camera clipping planes
+        cameraNear = 10.0f;
+        cameraFar = 10000.0f;
+
+        sunDirection = Vec3(-0.1f, -0.1f, -0.3f).normalized();
+
+        sceneBounds = Bounds3(Vec3(-600.0f, 0.0f, -310.0f), Vec3(600.0f, 600.0f, 310.0f));
+        ballsBounds = Bounds3(Vec3(-200.0f, 250.0f, -100.0f), Vec3(200.0f, 300.0f, 100.0f));
+        
+        cameraPos = Vec3(0.0f, 100.0f, 200.0f);
+        cameraLookAt = Vec3(0.0f, 50.0f, 0.0f);
+    }
+
+    void setupBunnyScene()
+    {
+        fileName = "bunny.glb";
+
+        numBalls = 1000;
+        gravity = 9.8f;
+        bounce = 0.85f;  // Coefficient of restitution
+        friction = 1.0f; // no friction
+        terminalVelocity = 10.0f;
+
+        // Ball size parameters
+        minRadius = 0.25f;
+        maxRadius = 0.45f;
+
+        // Camera clipping planes
+        cameraNear = 0.1f;
+        cameraFar = 1000.0f;
+
+        sunDirection = Vec3(-0.1f, -0.1f, -0.3f).normalized();
+
+        sceneBounds = Bounds3(Vec3(-50.0f, 0.0f, -50.0f), Vec3(50.0f, 50.0f, 50.0f));
+        ballsBounds = Bounds3(Vec3(-40.0f, 30.0f, -40.0f), Vec3(40.0f, 300.0f, 40.0f));
+        
+        cameraPos = Vec3(0.0f, 30.0f, 50.0f);
+        cameraLookAt = Vec3(0.0f, 15.0f, 0.0f);
+    }
+};
+
+
+struct BallsDeviceData;
+
+class BallsDemo : public Demo {
+private:
+
+    BallsDemoDescriptor demoDesc;
+    std::string customName = "3D Bouncing Balls";
+    int lastInitializedBallCount = -1;  // Track for reinit detection
     GLuint vao, vbo;
     GLuint ballShader;
     GLuint ballShadowShader;
@@ -59,7 +120,6 @@ private:
     
     // CUDA resources
     cudaGraphicsResource* cudaVboResource = nullptr;
-    bool useCuda = true;
     bool useBVH = false;  // Toggle between BVH and hash grid collision
     BVHBuilder* bvhBuilder = nullptr;
     
@@ -70,7 +130,8 @@ private:
     
     // Camera (reference to main camera)
     Camera* camera = nullptr;
-    
+    BallsDeviceData* deviceData = nullptr;
+
     // Lighting
 
     // To the light (OpenGl convention)
@@ -82,6 +143,7 @@ private:
     Renderer* renderer = nullptr;
     bool showScene = false;
     bool useBakedLighting = false;
+    bool sceneLoaded = false;  // Flag for lazy loading
     
     // Skybox
     Skybox* skybox = nullptr;
@@ -95,12 +157,22 @@ private:
     void cleanupGL();
 
 public:
-    BallsDemo();
+    BallsDemo(const BallsDemoDescriptor& desc);
     ~BallsDemo();
     
-    const char* getName() const override { return "3D Bouncing Balls"; }
+    void setName(const std::string& name) { customName = name; }
+    void ensureSceneLoaded();  // Load scene on first use
+
+    // CUDA physics functions (implemented in BallsDemo.cu)
+    void initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene);
+    void updateCudaPhysics(float dt, cudaGraphicsResource* vboResource, bool useBVH);
+    void cleanupCudaPhysics(cudaGraphicsResource* vboResource);
+    bool cudaRaycast(const Ray& ray, float& t);
+    
+    const char* getName() const override { return customName.c_str(); }
     bool is3D() const override { return true; }
     void setCamera(Camera* cam) override { camera = cam; }
+    void applyCameraSettings() { if (camera) camera->lookAt(demoDesc.cameraPos, demoDesc.cameraLookAt); }
     bool raycast(const Vec3& orig, const Vec3& dir, float& t) override;
     void update(float deltaTime) override;
     void render(uchar4* d_out, int width, int height) override;
@@ -109,4 +181,8 @@ public:
     void reset() override;
     void onKeyPress(unsigned char key) override;
 };
+
+// Factory functions for BallsDeviceData (implemented in BallsDemo.cu)
+BallsDeviceData* createBallsDeviceData();
+void deleteBallsDeviceData(BallsDeviceData* data);
 
