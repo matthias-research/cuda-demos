@@ -13,6 +13,7 @@ layout (location = 0) in vec3 aPos;
 layout (location = 1) in float aRadius;
 layout (location = 2) in vec3 aColor;
 layout (location = 3) in vec4 aQuat;
+layout (location = 4) in float aShadowDepth;
 
 uniform mat4 projectionMat;
 uniform mat4 viewMat;
@@ -25,6 +26,7 @@ out vec3 eyePos;
 out vec4 quat;
 out vec3 viewRight;
 out vec3 viewUp;
+flat out float shadowDepth;
 
 void main()
 {
@@ -35,6 +37,7 @@ void main()
     radius = aRadius;
     eyePos = eyeSpacePos.xyz;
     quat = aQuat;
+    shadowDepth = aShadowDepth;
     
     // Extract right and up vectors from view matrix (robust for all orientations)
     viewRight = normalize(vec3(viewMat[0][0], viewMat[1][0], viewMat[2][0]));
@@ -49,6 +52,7 @@ const char* ballFragmentShader = R"(
 #version 330 core
 
 const float PI = 3.14159265359;
+const float MaxFloat = 3.402823466e+38;
 
 uniform vec3 viewPos;
 uniform vec3 lightDir;
@@ -58,6 +62,7 @@ in float radius;
 in vec3 eyePos;
 in vec4 quat;
 in vec3 viewRight;
+flat in float shadowDepth;
 
 out vec4 fragColor;
 
@@ -84,7 +89,7 @@ void main()
     // Use view matrix axes directly (robust for all camera orientations)
     vec3 axisZ = normalize(fragPos - viewPos);
     vec3 axisX = normalize(viewRight);
-    vec3 axisY = cross(axisZ, axisX);
+    vec3 axisY = cross(axisX, axisZ);
     
     // Calculate surface position using view matrix axes
     vec3 localPos = radius * (coord.x * axisX + coord.y * axisY - h * axisZ);
@@ -94,7 +99,7 @@ void main()
     vec3 normal = normalize(localPos);
     
     // Rotate normal by quaternion
-    vec3 rotNormal = qtransform(quat, normal);
+    vec3 rotNormal = qtransform(quat, vec3(normal.x, -normal.y, normal.z));
     
     // Create classic beach ball pattern with 6 colored segments
     float angle = atan(rotNormal.z, rotNormal.x);
@@ -125,6 +130,13 @@ void main()
     float ambient = 0.4;
     
     vec3 finalColor = color * (ambient + diffuse * 0.6) + vec3(1.0) * specular * 0.5;
+    
+    // Apply shadow darkening if ball is in shadow (shadowDepth < MaxFloat)
+    if (shadowDepth < MaxFloat) {
+        // Ball is shadowed - darken it slightly
+        finalColor *= 0.65;
+    }
+    
     fragColor = vec4(finalColor, 1.0);
 }
 )";
@@ -189,22 +201,17 @@ static GLuint compileShader(GLenum type, const char* source) {
     return shader;
 }
 
-BallsDemo::BallsDemo() : vao(0), vbo(0), ballShader(0), ballShadowShader(0), 
+BallsDemo::BallsDemo(const BallsDemoDescriptor& desc) : vao(0), vbo(0), ballShader(0), ballShadowShader(0), 
                          shadowFBO(0), shadowTexture(0), shadowWidth(0), shadowHeight(0) {
+    demoDesc = desc;
     bvhBuilder = new BVHBuilder();
     
     // Initialize mesh renderer
     renderer = new Renderer();
     renderer->init();
     
-    // Optionally load a static scene (uncomment when you have a .glb file)
+    // Scene will be loaded on demand (lazy loading)
     scene = new Scene();
-    if (scene->load("assets/city.glb")) {
-
-//    if (scene->load("assets/bunny.glb")) {
-        showScene = true;
-        useBakedLighting = true;  // Enable baked lighting mode by default
-    }
     
     // Initialize skybox
     skybox = new Skybox();
@@ -214,15 +221,47 @@ BallsDemo::BallsDemo() : vao(0), vbo(0), ballShader(0), ballShadowShader(0),
         showSkybox = false;
     }
     
+    // Allocate GPU device data structure using factory
+    deviceData = createBallsDeviceData();
+    
     paused = true;  // Start in paused mode
     
     initGL();
     initBalls();
 }
 
+void BallsDemo::ensureSceneLoaded() {
+    // Load scene on first use
+    if (!sceneLoaded) {
+        printf("Loading scene: %s\n", demoDesc.fileName.c_str());
+        if (scene->load("assets/" + demoDesc.fileName)) {
+            showScene = true;
+            printf("Scene loaded successfully!\n");
+        } else {
+            printf("Failed to load scene: %s\n", demoDesc.fileName.c_str());
+        }
+        sceneLoaded = true;
+    }
+    
+    // Check if ball count changed (reinitialize if needed)
+    // lastInitializedBallCount starts at -1, so first call will always reinit
+    if (lastInitializedBallCount != demoDesc.numBalls) {
+        printf("Ball count mismatch (last init: %d, current: %d), reinitializing CUDA physics...\n", lastInitializedBallCount, demoDesc.numBalls);
+        if (cudaVboResource) {
+            cleanupCudaPhysics(cudaVboResource);
+        }
+        initCudaPhysics(vbo, &cudaVboResource, bvhBuilder, scene);
+        lastInitializedBallCount = demoDesc.numBalls;
+    }
+}
+
 BallsDemo::~BallsDemo() {
     if (cudaVboResource) {
         cleanupCudaPhysics(cudaVboResource);
+    }
+    if (deviceData) {
+        deleteBallsDeviceData(deviceData);
+        deviceData = nullptr;
     }
     if (bvhBuilder) {
         delete bvhBuilder;
@@ -244,8 +283,8 @@ BallsDemo::~BallsDemo() {
 
 void BallsDemo::initBalls() {
     // Initialize CUDA physics with the VBO
-    if (useCuda && vbo != 0) {
-        initCudaPhysics(numBalls, sceneBounds, ballsBounds, minRadius, maxRadius, vbo, &cudaVboResource, bvhBuilder, scene);
+    if (vbo != 0) {
+        initCudaPhysics(vbo, &cudaVboResource, bvhBuilder, scene);
     }
 }
 
@@ -257,7 +296,7 @@ void BallsDemo::initGL() {
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     
     // Allocate VBO (will be filled by CUDA)
-    glBufferData(GL_ARRAY_BUFFER, numBalls * 14 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, demoDesc.numBalls * 14 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
     
     // Position attribute (location 0)
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)0);
@@ -274,6 +313,10 @@ void BallsDemo::initGL() {
     // Quaternion attribute (location 3)
     glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(7 * sizeof(float)));
     glEnableVertexAttribArray(3);
+    
+    // Shadow depth attribute (location 4)
+    glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(11 * sizeof(float)));
+    glEnableVertexAttribArray(4);
     
     glBindVertexArray(0);
     
@@ -383,7 +426,7 @@ void BallsDemo::renderShadows(int width, int height) {
     lightDirection.normalize();
     
     // Position light far away along the light direction
-    float roomDiag = (sceneBounds.maximum - sceneBounds.minimum).magnitude();
+    float roomDiag = (demoDesc.sceneBounds.maximum - demoDesc.sceneBounds.minimum).magnitude();
     Vec3 lightPos = -lightDirection * (roomDiag * 2.0f);  // Position light outside the scene
     Vec3 target(0.0f, 0.0f, 0.0f);  // Look at scene center
     
@@ -423,7 +466,7 @@ void BallsDemo::renderShadows(int width, int height) {
     
     // Draw all balls as flat white discs
     glBindVertexArray(vao);
-    glDrawArrays(GL_POINTS, 0, numBalls);
+    glDrawArrays(GL_POINTS, 0, demoDesc.numBalls);
     glBindVertexArray(0);
     
     glDisable(GL_DEPTH_TEST);
@@ -433,6 +476,9 @@ void BallsDemo::renderShadows(int width, int height) {
 }
 
 void BallsDemo::update(float deltaTime) {
+    // Ensure scene is loaded on first use
+    ensureSceneLoaded();
+    
     // Track FPS
     if (lastUpdateTime > 0.0f) {
         fps = 1.0f / deltaTime;
@@ -440,8 +486,8 @@ void BallsDemo::update(float deltaTime) {
     lastUpdateTime = deltaTime;
     
     // Update physics on GPU (only if not paused)
-    if (!paused && useCuda && cudaVboResource) {
-        updateCudaPhysics(deltaTime, Vec3(0, -gravity, 0), friction, terminalVelocity, bounce, sceneBounds, cudaVboResource, useBVH);
+    if (!paused && cudaVboResource) {
+        updateCudaPhysics(deltaTime, cudaVboResource, useBVH);
     }
 }
 
@@ -458,7 +504,7 @@ bool BallsDemo::raycast(const Vec3& orig, const Vec3& dir, float& minT)
     // raycast against floor plane of the sceneBounds
 
     if (dir.y < -1e-6) {
-        t = (sceneBounds.minimum.y - orig.y) / dir.y;
+        t = (demoDesc.sceneBounds.minimum.y - orig.y) / dir.y;
         if (t > 0 && t < minT) {
             minT = t;
         }
@@ -487,7 +533,7 @@ void BallsDemo::renderUI() {
     ImGui::Text("Performance:");
     ImGui::Text("  FPS: %.1f", fps);
     ImGui::Text("  Frame Time: %.2f ms", lastUpdateTime * 1000.0f);
-    ImGui::Text("  Ball Count: %d", numBalls);
+    ImGui::Text("  Ball Count: %d", demoDesc.numBalls);
     
     ImGui::Separator();
     ImGui::Text("Camera Controls:");
@@ -501,19 +547,19 @@ void BallsDemo::renderUI() {
     ImGui::Text("GPU Simulation Parameters:");
     
     bool ballCountChanged = false;
-    if (ImGui::SliderInt("Ball Count##balls", &numBalls, 1000, 100000)) {
+    if (ImGui::SliderInt("Ball Count##balls", &demoDesc.numBalls, 1000, 100000)) {
         ballCountChanged = true;
     }
     
-    ImGui::SliderFloat("Gravity##balls", &gravity, 0.0f, 20.0f, "%.1f");
-    ImGui::SliderFloat("Bounce##balls", &bounce, 0.0f, 1.0f, "%.2f");
-    ImGui::SliderFloat("Friction##balls", &friction, 0.8f, 1.0f, "%.3f");
+    ImGui::SliderFloat("Gravity##balls", &demoDesc.gravity, 0.0f, 20.0f, "%.1f");
+    ImGui::SliderFloat("Bounce##balls", &demoDesc.bounce, 0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Friction##balls", &demoDesc.friction, 0.8f, 1.0f, "%.3f");
     ImGui::Text("Scene Bounds: [%.0f, %.0f, %.0f] to [%.0f, %.0f, %.0f]",
-        sceneBounds.minimum.x, sceneBounds.minimum.y, sceneBounds.minimum.z,
-        sceneBounds.maximum.x, sceneBounds.maximum.y, sceneBounds.maximum.z);
+        demoDesc.sceneBounds.minimum.x, demoDesc.sceneBounds.minimum.y, demoDesc.sceneBounds.minimum.z,
+        demoDesc.sceneBounds.maximum.x, demoDesc.sceneBounds.maximum.y, demoDesc.sceneBounds.maximum.z);
     ImGui::Text("Spawn Bounds: [%.0f, %.0f, %.0f] to [%.0f, %.0f, %.0f]",
-        ballsBounds.minimum.x, ballsBounds.minimum.y, ballsBounds.minimum.z,
-        ballsBounds.maximum.x, ballsBounds.maximum.y, ballsBounds.maximum.z);
+        demoDesc.ballsBounds.minimum.x, demoDesc.ballsBounds.minimum.y, demoDesc.ballsBounds.minimum.z,
+        demoDesc.ballsBounds.maximum.x, demoDesc.ballsBounds.maximum.y, demoDesc.ballsBounds.maximum.z);
     
     ImGui::Separator();
     ImGui::Text("Collision Detection Method:");
@@ -538,8 +584,8 @@ void BallsDemo::renderUI() {
         ImGui::Text("  Meshes loaded: %zu", scene->getMeshCount());
         ImGui::Checkbox("Show Scene##balls", &showScene);
         if (renderer) {
-            ImGui::Checkbox("Use Baked Lighting##balls", &useBakedLighting);
-            if (!useBakedLighting) {
+            ImGui::Checkbox("Use Baked Lighting##balls", &demoDesc.useBakedLighting);
+            if (!demoDesc.useBakedLighting) {
                 ImGui::SliderFloat("Mesh Ambient##balls", &renderer->getMaterial().ambientStrength, 0.0f, 1.0f);
                 ImGui::SliderFloat("Mesh Specular##balls", &renderer->getMaterial().specularStrength, 0.0f, 2.0f);
             }
@@ -559,11 +605,6 @@ void BallsDemo::renderUI() {
     }
     
     ImGui::Separator();
-    if (ImGui::Button("Reset Simulation##balls", ImVec2(200, 0))) {
-        reset();
-        ballCountChanged = true;
-    }
-    
     if (ImGui::Button("Reset View##balls", ImVec2(200, 0))) {
         if (camera) camera->resetView();
     }
@@ -578,7 +619,7 @@ void BallsDemo::renderUI() {
         
         // Reallocate VBO
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, numBalls * 14 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, demoDesc.numBalls * 14 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         
         // Reinitialize CUDA
@@ -595,12 +636,9 @@ void BallsDemo::renderUI() {
 }
 
 void BallsDemo::reset() {
-    gravity = 9.8f;
-    bounce = 0.85f;
-    friction = 0.99f;
-    sceneBounds = Bounds3(Vec3(-10.0f, 0.0f, -10.0f), Vec3(10.0f, 20.0f, 10.0f));
-    ballsBounds = Bounds3(Vec3(-8.0f, 5.0f, -8.0f), Vec3(8.0f, 15.0f, 8.0f));
-    lightDir = -Vec3(0.3f, 1.0f, 0.5f).normalized();
+    // Reset to descriptor defaults
+    // (descriptor values are set in setupCityScene(), setupBunnyScene(), etc.)
+    // Currently just reinitializing with current descriptor values
     
     // Reinitialize CUDA physics
     if (cudaVboResource) {
@@ -609,7 +647,10 @@ void BallsDemo::reset() {
     }
     initBalls();
     
-    if (camera) camera->resetView();
+    // Reset camera to descriptor settings
+    if (camera) {
+        camera->lookAt(demoDesc.cameraPos, demoDesc.cameraLookAt);
+    }
 }
 
 void BallsDemo::onKeyPress(unsigned char key) {
@@ -622,8 +663,8 @@ void BallsDemo::render3D(int width, int height) {
     if (!camera) return;
     
     // Apply camera clipping planes
-    camera->nearClip = cameraNear;
-    camera->farClip = cameraFar;
+    camera->nearClip = demoDesc.cameraNear;
+    camera->farClip = demoDesc.cameraFar;
     
     // Render directly to default framebuffer (screen)
     glViewport(0, 0, width, height);
@@ -710,7 +751,7 @@ void BallsDemo::render3D(int width, int height) {
     
     // Draw all balls as points (VBO is already filled by CUDA)
     glBindVertexArray(vao);
-    glDrawArrays(GL_POINTS, 0, numBalls);
+    glDrawArrays(GL_POINTS, 0, demoDesc.numBalls);
     glBindVertexArray(0);
     
     // Render static scene after balls (for proper depth testing)
@@ -726,7 +767,7 @@ void BallsDemo::render3D(int width, int height) {
         glDisable(GL_CULL_FACE);
         
         // Set baked lighting mode
-        renderer->setUseBakedLighting(useBakedLighting);
+        renderer->setUseBakedLighting(demoDesc.useBakedLighting);
         
         // Create shadow map struct with light matrix from renderShadows
         Renderer::ShadowMap shadowMapData;
@@ -734,7 +775,7 @@ void BallsDemo::render3D(int width, int height) {
         shadowMapData.bias = 0.005f;
         
         // Calculate light view-projection matrix (same as in renderShadows)
-        float roomDiag = (sceneBounds.maximum - sceneBounds.minimum).magnitude();
+        float roomDiag = (demoDesc.sceneBounds.maximum - demoDesc.sceneBounds.minimum).magnitude();
         Vec3 lightPos = -lightDirection * (roomDiag * 2.0f);
         Vec3 target(0.0f, 0.0f, 0.0f);
         Vec3 forward = (target - lightPos).normalized();
