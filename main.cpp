@@ -525,7 +525,7 @@ int main(int argc, char** argv) {
     glutInit(&argc, argv);
 
     glutSetOption(GLUT_MULTISAMPLE, 8);
-    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA);
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH | GLUT_MULTISAMPLE);
     glutInitWindowSize(windowWidth, windowHeight);
     glutCreateWindow("CUDA Demos");
     
@@ -535,6 +535,9 @@ int main(int argc, char** argv) {
         std::cerr << "Error: " << glewGetErrorString(err) << std::endl;
         return -1;
     }
+    
+    // Enable multisampling antialiasing
+    glEnable(GL_MULTISAMPLE);
     
     // Get GPU info
     cudaDeviceProp prop;

@@ -42,7 +42,7 @@ struct BallsDeviceData {
         numMeshTriangles = 0;
         meshesBvh.free();
         trianglesBvh.free();
-        raycastDepths.free();
+        rayCastMinT.free();
     }
     
     size_t allocationSize() const
@@ -67,7 +67,7 @@ struct BallsDeviceData {
         s += meshBoundsUpper.allocationSize();
         s += meshTriBoundsLower.allocationSize();
         s += meshTriBoundsUpper.allocationSize();
-        s += raycastDepths.allocationSize();
+        s += rayCastMinT.allocationSize();
         return s;
     }
     
@@ -111,11 +111,10 @@ struct BallsDeviceData {
     // Collision correction buffers (for symmetric resolution)
     DeviceBuffer<Vec3> posCorr;       // Position corrections
     DeviceBuffer<Vec4> newAngVel;     // New angular velocity accumulation (x,y,z = sum, w = count)
-    
-    // VBO data (mapped from OpenGL)
-    float* vboData = nullptr;      // Interleaved: pos(3), radius(1), color(3), quat(4), pad(3) = 14 floats
 
-    DeviceBuffer<float> raycastDepths;
+    DeviceBuffer<float> rayCastMinT; // Minimum t values for ray casting
+    // VBO data (mapped from OpenGL)
+    float* vboData = nullptr;      // Interleaved: pos(3), radius(1), color(3), quat(4), pad(3) = 14 floats    
 };
 
 // Factory functions for BallsDeviceData
@@ -817,7 +816,7 @@ __device__ bool kernel_rayTriangleIntersection(
 
 
 // Kernel: Ball-mesh collision using BVH
-__device__ bool kernel_raycastMesh(BallsDeviceData data, int meshIdx, Ray ray, float* minT) {
+__device__ bool kernel_raycastMesh(BallsDeviceData data, int meshIdx, Ray ray, float& minT) {
 
     int rootNode = data.trianglesBvh.mRootNodes[meshIdx];
     if (rootNode < 0)
@@ -861,9 +860,9 @@ __device__ bool kernel_raycastMesh(BallsDeviceData data, int meshIdx, Ray ray, f
                 if (kernel_rayTriangleIntersection(ray, v0, v1, v2, t, u, v))
                 {
                     hit = true;
-                    if (t > 0.0f && t < *minT)
+                    if (t > 0.0f && t < minT)
                     {
-                        *minT = t;
+                        minT = t;
                     }
                 }
             }
@@ -886,23 +885,14 @@ __global__ void kernel_raycast(BallsDeviceData data, bool useBalls, Ray ray)
     if (idx >= data.numBalls) 
         return;
 
-    float* minT = &data.raycastDepths[0];
-
     if (useBalls) // origin is ball position
     {
         float* ballData = data.vboData + idx * 14;
-
         Vec3 pos(ballData[0], ballData[1], ballData[2]);
         ray.orig = pos;
-
-        minT = &ballData[11];
-
-        if (idx == 0)
-            printf("ray %f %f %f, %f %f %f\n", ray.orig.x, ray.orig.y, ray.orig.z, ray.dir.x, ray.dir.y, ray.dir.z);
     }
 
-    *minT = MaxFloat;
-
+    float minT = MaxFloat;
     int stack[64];
     stack[0] = data.meshesBvh.mRootNodes[0];
     int count = 1;
@@ -931,6 +921,24 @@ __global__ void kernel_raycast(BallsDeviceData data, bool useBalls, Ray ray)
                stack[count++] = rightIndex;
            }
         }
+    }
+
+    if (useBalls)
+    {
+        // fade shadow depth based on hit
+        float& shadowValue = data.vboData[idx * 14 + 11];
+        if (minT < MaxFloat)
+        {
+            shadowValue = Min(1.0f, shadowValue + 0.1f);
+        }
+        else
+        {
+            shadowValue = Max(0.0f, shadowValue - 0.1f);
+        }        
+    }
+    else
+    {
+        data.rayCastMinT[0] = minT;
     }
 }
 
@@ -1291,12 +1299,12 @@ bool BallsDemo::cudaRaycast(const Ray& ray, float& minT)
     if (deviceData->numMeshTriangles == 0)
         return false;
 
-    int numRaycasts = 1;
-    deviceData->raycastDepths.resize(numRaycasts, false);
+    deviceData->rayCastMinT.resize(1, false);
 
-    kernel_raycast<<<numRaycasts / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK>>>(*deviceData, false, ray);
-    deviceData->raycastDepths.getDeviceObject(minT, 0);
+    kernel_raycast<<<1 / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK>>>(*deviceData, false, ray);
+    deviceData->rayCastMinT.getDeviceObject(minT, 0);
 
     return (minT < MaxFloat);
 }
+
 

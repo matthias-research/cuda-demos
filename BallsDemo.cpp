@@ -13,7 +13,7 @@ layout (location = 0) in vec3 aPos;
 layout (location = 1) in float aRadius;
 layout (location = 2) in vec3 aColor;
 layout (location = 3) in vec4 aQuat;
-layout (location = 4) in float aShadowDepth;
+layout (location = 4) in float aShadowValue;
 
 uniform mat4 projectionMat;
 uniform mat4 viewMat;
@@ -26,7 +26,7 @@ out vec3 eyePos;
 out vec4 quat;
 out vec3 viewRight;
 out vec3 viewUp;
-flat out float shadowDepth;
+flat out float shadowValue;
 
 void main()
 {
@@ -37,7 +37,7 @@ void main()
     radius = aRadius;
     eyePos = eyeSpacePos.xyz;
     quat = aQuat;
-    shadowDepth = aShadowDepth;
+    shadowValue = aShadowValue;
     
     // Extract right and up vectors from view matrix (robust for all orientations)
     viewRight = normalize(vec3(viewMat[0][0], viewMat[1][0], viewMat[2][0]));
@@ -62,7 +62,7 @@ in float radius;
 in vec3 eyePos;
 in vec4 quat;
 in vec3 viewRight;
-flat in float shadowDepth;
+flat in float shadowValue;
 
 out vec4 fragColor;
 
@@ -131,11 +131,8 @@ void main()
     
     vec3 finalColor = color * (ambient + diffuse * 0.6) + vec3(1.0) * specular * 0.5;
     
-    // Apply shadow darkening if ball is in shadow (shadowDepth < MaxFloat)
-    if (shadowDepth < MaxFloat) {
-        // Ball is shadowed - darken it slightly
-        finalColor *= 0.65;
-    }
+    // Apply shadow darkening if ball is in shadow
+    finalColor *= (1.0 - shadowValue * 0.5);
     
     fragColor = vec4(finalColor, 1.0);
 }
