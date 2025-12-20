@@ -482,6 +482,9 @@ void BallsDemo::update(float deltaTime) {
     }
     lastUpdateTime = deltaTime;
     
+    // Sync sun direction with lighting direction for ball shadows
+    demoDesc.sunDirection = lightDir.normalized();
+    
     // Update physics on GPU (only if not paused)
     if (!paused && cudaVboResource) {
         updateCudaPhysics(deltaTime, cudaVboResource, useBVH);
@@ -571,9 +574,20 @@ void BallsDemo::renderUI() {
     
     ImGui::Separator();
     ImGui::Text("Lighting (Directional):");
-    ImGui::SliderFloat("Light Dir X##balls", &lightDir.x, -1.0f, 1.0f);
-    ImGui::SliderFloat("Light Dir Y##balls", &lightDir.y, -1.0f, 1.0f);
-    ImGui::SliderFloat("Light Dir Z##balls", &lightDir.z, -1.0f, 1.0f);
+    float lightAzimuthDegrees = lightAzimuth * 180.0f / 3.14159265f;
+    float lightElevationDegrees = lightElevation * 180.0f / 3.14159265f;
+    if (ImGui::SliderFloat("Light Azimuth (deg)##balls", &lightAzimuthDegrees, 0.0f, 360.0f)) {
+        lightAzimuth = lightAzimuthDegrees * 3.14159265f / 180.0f;
+    }
+    if (ImGui::SliderFloat("Light Elevation (deg)##balls", &lightElevationDegrees, 0.0f, 180.0f)) {
+        lightElevation = lightElevationDegrees * 3.14159265f / 180.0f;
+    }
+    // Convert spherical coordinates to direction vector
+    float sinElev = sinf(lightElevation);
+    float cosElev = cosf(lightElevation);
+    float sinAzim = sinf(lightAzimuth);
+    float cosAzim = cosf(lightAzimuth);
+    lightDir = Vec3(sinElev * cosAzim, cosElev, sinElev * sinAzim).normalized();
     
     ImGui::Separator();
     ImGui::Text("Static Scene:");
@@ -583,7 +597,8 @@ void BallsDemo::renderUI() {
         if (renderer) {
             ImGui::Checkbox("Use Baked Lighting##balls", &demoDesc.useBakedLighting);
             if (!demoDesc.useBakedLighting) {
-                ImGui::SliderFloat("Mesh Ambient##balls", &renderer->getMaterial().ambientStrength, 0.0f, 1.0f);
+                ImGui::SliderFloat("Mesh Ambient##balls", &demoDesc.meshAmbient, 0.0f, 1.0f);
+                renderer->getMaterial().ambientStrength = demoDesc.meshAmbient;
                 ImGui::SliderFloat("Mesh Specular##balls", &renderer->getMaterial().specularStrength, 0.0f, 2.0f);
             }
         }

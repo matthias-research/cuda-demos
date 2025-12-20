@@ -29,6 +29,7 @@ struct BallsDemoDescriptor
     float bounce = 0.85f;  // Coefficient of restitution
     float friction = 1.0f; // no friction
     float terminalVelocity = 10.0f;
+    float meshAmbient = 0.2f;  // Mesh ambient lighting strength
     
     // Ball size parameters
     float minRadius = 0.25f;
@@ -58,6 +59,7 @@ struct BallsDemoDescriptor
         bounce = 0.85f;  // Coefficient of restitution
         friction = 1.0f; // no friction
         terminalVelocity = 10.0f;
+        meshAmbient = 0.7f;
 
         // Ball size parameters
         minRadius = 0.25f;
@@ -74,7 +76,7 @@ struct BallsDemoDescriptor
         
         cameraPos = Vec3(0.0f, 100.0f, 200.0f);
         cameraLookAt = Vec3(0.0f, 50.0f, 0.0f);
-        useBakedLighting = true;
+        useBakedLighting = false;
     }
 
     void setupBunnyScene()
@@ -86,6 +88,7 @@ struct BallsDemoDescriptor
         bounce = 0.85f;  // Coefficient of restitution
         friction = 1.0f; // no friction
         terminalVelocity = 10.0f;
+        meshAmbient = 0.2f;
 
         // Ball size parameters
         minRadius = 0.5f;
@@ -141,6 +144,8 @@ private:
 
     // To the light (OpenGl convention)
     Vec3 lightDir = Vec3(0.1f, 0.1f, 0.5f).normalized();
+    float lightAzimuth = 1.2f;      // Angle around up axis (radians)
+    float lightElevation = 1.1f;    // Angle from up axis (radians)
     bool useShadows = false;  // Toggle shadow mapping on/off
 
     // Static scene rendering
