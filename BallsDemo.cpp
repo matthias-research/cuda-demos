@@ -482,9 +482,6 @@ void BallsDemo::update(float deltaTime) {
     }
     lastUpdateTime = deltaTime;
     
-    // Sync sun direction with lighting direction for ball shadows
-    demoDesc.sunDirection = lightDir.normalized();
-    
     // Update physics on GPU (only if not paused)
     if (!paused && cudaVboResource) {
         updateCudaPhysics(deltaTime, cudaVboResource, useBVH);
@@ -574,20 +571,37 @@ void BallsDemo::renderUI() {
     
     ImGui::Separator();
     ImGui::Text("Lighting (Directional):");
-    float lightAzimuthDegrees = lightAzimuth * 180.0f / 3.14159265f;
-    float lightElevationDegrees = lightElevation * 180.0f / 3.14159265f;
+    float lightAzimuthDegrees = demoDesc.lightAzimuth * 180.0f / 3.14159265f;
+    float lightElevationDegrees = demoDesc.lightElevation * 180.0f / 3.14159265f;
     if (ImGui::SliderFloat("Light Azimuth (deg)##balls", &lightAzimuthDegrees, 0.0f, 360.0f)) {
-        lightAzimuth = lightAzimuthDegrees * 3.14159265f / 180.0f;
+        demoDesc.lightAzimuth = lightAzimuthDegrees * 3.14159265f / 180.0f;
     }
     if (ImGui::SliderFloat("Light Elevation (deg)##balls", &lightElevationDegrees, 0.0f, 180.0f)) {
-        lightElevation = lightElevationDegrees * 3.14159265f / 180.0f;
+        demoDesc.lightElevation = lightElevationDegrees * 3.14159265f / 180.0f;
     }
     // Convert spherical coordinates to direction vector
-    float sinElev = sinf(lightElevation);
-    float cosElev = cosf(lightElevation);
-    float sinAzim = sinf(lightAzimuth);
-    float cosAzim = cosf(lightAzimuth);
+    float sinElev = sinf(demoDesc.lightElevation);
+    float cosElev = cosf(demoDesc.lightElevation);
+    float sinAzim = sinf(demoDesc.lightAzimuth);
+    float cosAzim = cosf(demoDesc.lightAzimuth);
     lightDir = Vec3(sinElev * cosAzim, cosElev, sinElev * sinAzim).normalized();
+    
+    ImGui::Separator();
+    ImGui::Text("Sun Direction (Ball Shadows):");
+    float sunAzimuthDegrees = demoDesc.sunAzimuth * 180.0f / 3.14159265f;
+    float sunElevationDegrees = demoDesc.sunElevation * 180.0f / 3.14159265f;
+    if (ImGui::SliderFloat("Sun Azimuth (deg)##balls", &sunAzimuthDegrees, 0.0f, 360.0f)) {
+        demoDesc.sunAzimuth = sunAzimuthDegrees * 3.14159265f / 180.0f;
+    }
+    if (ImGui::SliderFloat("Sun Elevation (deg)##balls", &sunElevationDegrees, 0.0f, 180.0f)) {
+        demoDesc.sunElevation = sunElevationDegrees * 3.14159265f / 180.0f;
+    }
+    // Convert spherical coordinates to sun direction vector
+    float sunSinElev = sinf(demoDesc.sunElevation);
+    float sunCosElev = cosf(demoDesc.sunElevation);
+    float sunSinAzim = sinf(demoDesc.sunAzimuth);
+    float sunCosAzim = cosf(demoDesc.sunAzimuth);
+    demoDesc.sunDirection = Vec3(sunSinElev * sunCosAzim, sunCosElev, sunSinElev * sunSinAzim).normalized();
     
     ImGui::Separator();
     ImGui::Text("Static Scene:");

@@ -30,6 +30,10 @@ struct BallsDemoDescriptor
     float friction = 1.0f; // no friction
     float terminalVelocity = 10.0f;
     float meshAmbient = 0.2f;  // Mesh ambient lighting strength
+    float lightAzimuth = 1.2f;      // Light direction: angle around up axis (radians)
+    float lightElevation = 1.1f;    // Light direction: angle from up axis (radians)
+    float sunAzimuth = 1.2f;        // Sun direction for shadows: angle around up axis (radians)
+    float sunElevation = 1.1f;      // Sun direction for shadows: angle from up axis (radians)
     
     // Ball size parameters
     float minRadius = 0.25f;
@@ -54,12 +58,16 @@ struct BallsDemoDescriptor
     {
         fileName = "city.glb";
 
-        numBalls = 1000000;
+        numBalls = 5000000;
         gravity = 9.8f;
         bounce = 0.85f;  // Coefficient of restitution
         friction = 1.0f; // no friction
-        terminalVelocity = 10.0f;
+        terminalVelocity = 2.0f;
         meshAmbient = 0.7f;
+        lightAzimuth = 82.0f * 3.14159265f / 180.0f;
+        lightElevation = 26.875f * 3.14159265f / 180.0f;
+        sunAzimuth = 283.25f * 3.14159265f / 180.0f;
+        sunElevation = 26.25f * 3.14159265f / 180.0f;
 
         // Ball size parameters
         minRadius = 0.25f;
@@ -71,9 +79,10 @@ struct BallsDemoDescriptor
 
         sunDirection = Vec3(0.3f, 0.8f, 0.3f).normalized();
 
-        sceneBounds = Bounds3(Vec3(-600.0f, 0.0f, -310.0f), Vec3(600.0f, 600.0f, 310.0f));
-        ballsBounds = Bounds3(Vec3(-200.0f, 250.0f, -100.0f), Vec3(200.0f, 300.0f, 100.0f));
-        
+        sceneBounds = Bounds3(Vec3(-580.0f, 0.0f, -310.0f), Vec3(600.0f, 600.0f, 310.0f));
+//        ballsBounds = Bounds3(Vec3(-200.0f, 0.0f, -50.0f), Vec3(-150.0f, 300.0f, 0.0f));
+        ballsBounds = Bounds3(Vec3(-580.0f, 100.0f, -300.0f), Vec3(500.0f, 300.0f, 300.0f));
+
         cameraPos = Vec3(0.0f, 100.0f, 200.0f);
         cameraLookAt = Vec3(0.0f, 50.0f, 0.0f);
         useBakedLighting = false;
@@ -89,6 +98,10 @@ struct BallsDemoDescriptor
         friction = 1.0f; // no friction
         terminalVelocity = 10.0f;
         meshAmbient = 0.2f;
+        lightAzimuth = 1.2f;
+        lightElevation = 1.1f;
+        sunAzimuth = 1.2f;
+        sunElevation = 1.1f;
 
         // Ball size parameters
         minRadius = 0.5f;
@@ -144,8 +157,6 @@ private:
 
     // To the light (OpenGl convention)
     Vec3 lightDir = Vec3(0.1f, 0.1f, 0.5f).normalized();
-    float lightAzimuth = 1.2f;      // Angle around up axis (radians)
-    float lightElevation = 1.1f;    // Angle from up axis (radians)
     bool useShadows = false;  // Toggle shadow mapping on/off
 
     // Static scene rendering

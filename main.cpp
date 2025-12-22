@@ -20,7 +20,7 @@ unsigned int windowHeight = 1536;
 
 // Demo management
 std::vector<std::unique_ptr<Demo>> demos;
-int currentDemoIndex = 1;  // Start with Bunny scene (faster to load)
+int currentDemoIndex = 0;  // Start with Bunny scene (faster to load)
 
 // Camera for 3D demos
 Camera camera;
