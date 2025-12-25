@@ -730,11 +730,24 @@ __global__ void kernel_initBalls(BallsDeviceData data, Bounds3 ballsBounds, floa
         ballData[4] = 0.1f; ballData[5] = 0.85f; ballData[6] = 0.85f;
     }
     
-    // Identity quaternion
-    ballData[7] = 1.0f;  // w
-    ballData[8] = 0.0f;  // x
-    ballData[9] = 0.0f;  // y
-    ballData[10] = 0.0f; // z
+    // Random orientation quaternion (random axis-angle rotation)
+    float angle = FRAND() * 3.14159f * 2.0f;  // Random angle [0, 2π]
+    float axisMag = sqrtf(FRAND());  // Magnitude for random unit vector
+    float axisTheta = FRAND() * 3.14159f * 2.0f;
+    float axisPhi = acosf(2.0f * FRAND() - 1.0f);
+    
+    // Random unit axis
+    float axisX = sinf(axisPhi) * cosf(axisTheta);
+    float axisY = sinf(axisPhi) * sinf(axisTheta);
+    float axisZ = cosf(axisPhi);
+    
+    // Convert axis-angle to quaternion
+    float halfAngle = angle * 0.5f;
+    float sinHalfAngle = sinf(halfAngle);
+    ballData[7] = cosf(halfAngle);  // w
+    ballData[8] = axisX * sinHalfAngle;  // x
+    ballData[9] = axisY * sinHalfAngle;  // y
+    ballData[10] = axisZ * sinHalfAngle; // z
     
     // Padding
     ballData[11] = 0.0f;

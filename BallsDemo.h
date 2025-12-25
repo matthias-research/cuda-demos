@@ -52,17 +52,18 @@ struct BallsDemoDescriptor
     Bounds3 sceneBounds = Bounds3(Vec3(-600.0f, 0.0f, -310.0f), Vec3(600.0f, 600.0f, 310.0f));
     Bounds3 ballsBounds = Bounds3(Vec3(-200.0f, 250.0f, -100.0f), Vec3(200.0f, 300.0f, 100.0f));
     std::string fileName = "";
+    std::string ballTextureName = "";  // Texture file for ball rendering
     bool useBakedLighting = false;
 
     void setupCityScene()
     {
         fileName = "city.glb";
 
-        numBalls = 5000000;
+        numBalls = 50000000;
         gravity = 9.8f;
         bounce = 0.85f;  // Coefficient of restitution
         friction = 1.0f; // no friction
-        terminalVelocity = 2.0f;
+        terminalVelocity = 10.0f;
         meshAmbient = 0.7f;
         lightAzimuth = 82.0f * 3.14159265f / 180.0f;
         lightElevation = 26.875f * 3.14159265f / 180.0f;
@@ -70,8 +71,8 @@ struct BallsDemoDescriptor
         sunElevation = 26.25f * 3.14159265f / 180.0f;
 
         // Ball size parameters
-        minRadius = 0.25f;
-        maxRadius = 0.25f;
+        minRadius = 0.5f;
+        maxRadius = 0.5f;
 
         // Camera clipping planes
         cameraNear = 10.0f;
@@ -79,9 +80,44 @@ struct BallsDemoDescriptor
 
         sunDirection = Vec3(0.3f, 0.8f, 0.3f).normalized();
 
-        sceneBounds = Bounds3(Vec3(-580.0f, 0.0f, -310.0f), Vec3(600.0f, 600.0f, 310.0f));
-//        ballsBounds = Bounds3(Vec3(-200.0f, 0.0f, -50.0f), Vec3(-150.0f, 300.0f, 0.0f));
-        ballsBounds = Bounds3(Vec3(-580.0f, 100.0f, -300.0f), Vec3(500.0f, 300.0f, 300.0f));
+        // sceneBounds = Bounds3(Vec3(-580.0f, 0.0f, -310.0f), Vec3(600.0f, 600.0f, 310.0f));
+        // tower
+        ballsBounds = Bounds3(Vec3(-200.0f, 0.0f, -50.0f), Vec3(-150.0f, 300.0f, 0.0f));
+        // ballsBounds = Bounds3(Vec3(-580.0f, 100.0f, -300.0f), Vec3(500.0f, 300.0f, 300.0f));
+
+        cameraPos = Vec3(0.0f, 100.0f, 200.0f);
+        cameraLookAt = Vec3(0.0f, 50.0f, 0.0f);
+        useBakedLighting = false;
+    }
+
+    void setupWembleyScene()
+    {
+        fileName = "wembley.glb";
+        ballTextureName = "soccerBall.bmp";
+
+        numBalls = 10000;
+        gravity = 9.8f;
+        bounce = 0.85f;  // Coefficient of restitution
+        friction = 1.0f; // no friction
+        terminalVelocity = 10.0f;
+        meshAmbient = 0.7f;
+        lightAzimuth = 82.0f * 3.14159265f / 180.0f;
+        lightElevation = 26.875f * 3.14159265f / 180.0f;
+        sunAzimuth = 283.25f * 3.14159265f / 180.0f;
+        sunElevation = 26.25f * 3.14159265f / 180.0f;
+
+        // Ball size parameters
+        minRadius = 1.0f;
+        maxRadius = 1.0f;
+
+        // Camera clipping planes
+        cameraNear = 10.0f;
+        cameraFar = 10000.0f;
+
+        sunDirection = Vec3(0.3f, 0.8f, 0.3f).normalized();
+
+        sceneBounds = Bounds3(Vec3(-200.0f, 0.0f, -200.0f), Vec3(200.0f, 600.0f, 200.0f));
+        ballsBounds = Bounds3(Vec3(-20.0f, 0.0f, -20.0f), Vec3(20.0f, 300.0f, 20.0f));
 
         cameraPos = Vec3(0.0f, 100.0f, 200.0f);
         cameraLookAt = Vec3(0.0f, 50.0f, 0.0f);
@@ -158,6 +194,8 @@ private:
     // To the light (OpenGl convention)
     Vec3 lightDir = Vec3(0.1f, 0.1f, 0.5f).normalized();
     bool useShadows = false;  // Toggle shadow mapping on/off
+    bool useTextureMode = false;  // Toggle between texture mode and beach ball pattern
+    GLuint ballTexture = 0;  // Texture for ball rendering
 
     // Static scene rendering
     Scene* scene = nullptr;
@@ -175,6 +213,7 @@ private:
     void initShadowBuffer(int width, int height);
     void renderShadows(int width, int height);
     void cleanupGL();
+    GLuint loadTexture(const std::string& filename);
 
 public:
     BallsDemo(const BallsDemoDescriptor& desc);

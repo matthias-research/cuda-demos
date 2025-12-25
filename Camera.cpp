@@ -2,7 +2,7 @@
 
 #include "Camera.h"
 
-#define DEGS_PER_PIXEL 0.5f
+#define DEGS_PER_PIXEL 0.1f
 
 // -----------------------------------------------------------------------------------------------------------------
 void Camera::init()
@@ -58,6 +58,11 @@ void Camera::handleMouseView(int dx, int dy)
     forward = qx.rotate(forward);
     Quat qy(Pi * (-dy) * DEGS_PER_PIXEL / 180.0f, right);
     forward = qy.rotate(forward);
+
+    right.y = 0.0f; // force zero tilt
+    right.normalize();  
+    up = right.cross(forward);
+    up.normalize();      
 }
 
 //------------------------------------------------------------------------------
@@ -146,6 +151,26 @@ void Camera::handleKey(const bool keyDown[256])
 void Camera::handleWheel(int rotation)
 {
     pos += (float)rotation * forward * speed;
+}
+
+//------------------------------------------------------------------------------
+CameraState Camera::getState() const
+{
+    CameraState state;
+    state.pos = pos;
+    state.forward = forward;
+    state.right = right;
+    state.up = up;
+    return state;
+}
+
+//------------------------------------------------------------------------------
+void Camera::setState(const CameraState& state)
+{
+    pos = state.pos;
+    forward = state.forward;
+    right = state.right;
+    up = state.up;
 }
 
 //------------------------------------------------------------------------------

@@ -56,6 +56,8 @@ const float MaxFloat = 3.402823466e+38;
 
 uniform vec3 viewPos;
 uniform vec3 lightDir;
+uniform bool useTexture;
+uniform sampler2D ballTexture;
 
 in vec3 fragPos;
 in float radius;
@@ -101,25 +103,35 @@ void main()
     // Rotate normal by quaternion
     vec3 rotNormal = qtransform(quat, vec3(normal.x, -normal.y, normal.z));
     
-    // Create classic beach ball pattern with 6 colored segments
-    float angle = atan(rotNormal.z, rotNormal.x);
-    int segment = int((angle + PI) / (PI * 2.0) * 6.0);
-    segment = segment % 6;
+    vec3 color;
+    
+    if (useTexture) {
+        float phi = atan(rotNormal.z, rotNormal.x); 
+        float u = phi / (2.0 * PI) + 0.5;
+        float v = acos(rotNormal.y) / PI;        
+        color = texture(ballTexture, vec2(u, v)).rgb;
+    } 
+    else {
+        // Use default beach ball pattern
+        float angle = atan(rotNormal.z, rotNormal.x);
+        int segment = int((angle + PI) / (PI * 2.0) * 6.0);
+        segment = segment % 6;
 
-    if (abs(rotNormal.y) > 0.95) {
-        segment = 5; // Top and bottom segments are white
+        if (abs(rotNormal.y) > 0.95) {
+            segment = 5; // Top and bottom segments are white
+        }
+        
+        // Define beach ball colors
+        vec3 colors[6];
+        colors[0] = vec3(1.0, 0.2, 0.2);   // Red
+        colors[1] = vec3(1.0, 0.5, 0.2);  // Orange
+        colors[2] = vec3(1.0, 0.95, 0.2); // Yellow
+        colors[3] = vec3(0.2, 1.0, 0.2); // Green
+        colors[4] = vec3(0.2, 0.2, 1.0);  // Blue  
+        colors[5] = vec3(1.0, 1.0, 1.0); // White
+        
+        color = colors[segment];
     }
-    
-    // Define beach ball colors
-    vec3 colors[6];
-    colors[0] = vec3(1.0, 0.2, 0.2);   // Red
-    colors[1] = vec3(1.0, 0.5, 0.2);  // Orange
-    colors[2] = vec3(1.0, 0.95, 0.2); // Yellow
-    colors[3] = vec3(0.2, 1.0, 0.2); // Green
-    colors[4] = vec3(0.2, 0.2, 1.0);  // Blue  
-    colors[5] = vec3(1.0, 1.0, 1.0); // White
-    
-    vec3 color = colors[segment];
     
     // Phong lighting
     float diffuse = max(0.0, dot(lightDir, normal));
@@ -225,6 +237,19 @@ BallsDemo::BallsDemo(const BallsDemoDescriptor& desc) : vao(0), vbo(0), ballShad
     
     initGL();
     initBalls();
+    
+    // Load ball texture from descriptor if specified
+    printf("BallsDemo constructor: ballTextureName = '%s'\n", demoDesc.ballTextureName.c_str());
+    if (!demoDesc.ballTextureName.empty()) {
+        printf("Loading ball texture from descriptor\n");
+        ballTexture = loadTexture("assets/" + demoDesc.ballTextureName);
+        useTextureMode = true;  // Automatically enable texture mode when texture is loaded
+        printf("Texture mode enabled automatically\n");
+    } else {
+        printf("No ball texture specified, creating default\n");
+        ballTexture = loadTexture("");  // Creates default checkerboard
+    }
+    printf("Ball texture ID: %u\n", ballTexture);
 }
 
 void BallsDemo::ensureSceneLoaded() {
@@ -354,6 +379,140 @@ void BallsDemo::cleanupGL() {
     if (ballShadowShader) glDeleteProgram(ballShadowShader);
     if (shadowFBO) glDeleteFramebuffers(1, &shadowFBO);
     if (shadowTexture) glDeleteTextures(1, &shadowTexture);
+    if (ballTexture) glDeleteTextures(1, &ballTexture);
+}
+
+GLuint BallsDemo::loadTexture(const std::string& filename) {
+    printf("=== loadTexture() called ===\n");
+    printf("  filename: '%s'\n", filename.c_str());
+    
+    // Try to load from BMP file first
+    if (!filename.empty()) {
+        printf("  Attempting to load BMP from: %s\n", filename.c_str());
+        
+        FILE* file;
+        fopen_s(&file, filename.c_str(), "rb");
+        if (file) {
+            printf("  File opened successfully\n");
+            
+            // Read BMP header (54 bytes)
+            unsigned char header[54];
+            if (fread(header, 1, 54, file) == 54) {
+                // Check BMP signature
+                if (header[0] == 'B' && header[1] == 'M') {
+                    printf("  Valid BMP signature found\n");
+                    
+                    // Read image info from header
+                    unsigned int dataOffset = *(int*)&(header[0x0A]);
+                    unsigned int width = *(int*)&(header[0x12]);
+                    unsigned int height = *(int*)&(header[0x16]);
+                    unsigned short bitsPerPixel = *(short*)&(header[0x1C]);
+                    
+                    printf("  BMP dimensions: %u x %u, %u bits per pixel\n", width, height, bitsPerPixel);
+                    
+                    // Support 24-bit and 32-bit
+                    if ((bitsPerPixel == 24 || bitsPerPixel == 32) && width > 0 && height > 0) {
+                        int bytesPerPixel = bitsPerPixel / 8;
+                        int rowSize = width * 3;  // Output is always RGB
+                        int paddedRowSize = (width * bytesPerPixel + 3) & ~3;
+                        
+                        unsigned char* rawData = new unsigned char[paddedRowSize * height];
+                        unsigned char* imageData = new unsigned char[rowSize * height];
+                        
+                        // Read pixel data
+                        fseek(file, dataOffset, SEEK_SET);
+                        if (fread(rawData, 1, paddedRowSize * height, file) == paddedRowSize * height) {
+                            printf("  Pixel data read successfully\n");
+                            
+                            // Convert BMP (BGR) to RGB and flip vertically
+                            for (int y = 0; y < (int)height; y++) {
+                                for (int x = 0; x < (int)width; x++) {
+                                    int srcIdx = y * paddedRowSize + x * bytesPerPixel;
+                                    int dstIdx = (height - 1 - y) * rowSize + x * 3;
+                                    imageData[dstIdx + 0] = rawData[srcIdx + 2]; // R (from B)
+                                    imageData[dstIdx + 1] = rawData[srcIdx + 1]; // G
+                                    imageData[dstIdx + 2] = rawData[srcIdx + 0]; // B (from R)
+                                }
+                            }
+                            
+                            // Create OpenGL texture
+                            GLuint texture;
+                            glGenTextures(1, &texture);
+                            printf("  Generated OpenGL texture ID: %u\n", texture);
+                            
+                            glBindTexture(GL_TEXTURE_2D, texture);
+                            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+                            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+                            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+                            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                            
+                            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, imageData);
+                            glGenerateMipmap(GL_TEXTURE_2D);
+                            glBindTexture(GL_TEXTURE_2D, 0);
+                            
+                            printf("  BMP texture loaded successfully! (ID: %u)\n", texture);
+                            
+                            delete[] rawData;
+                            delete[] imageData;
+                            fclose(file);
+                            
+                            printf("=== loadTexture() returning texture ID: %u ===\n", texture);
+                            return texture;
+                        }
+                        
+                        delete[] rawData;
+                        delete[] imageData;
+                    } else {
+                        printf("  ERROR: Unsupported BMP format (expected 24 or 32 bits per pixel)\n");
+                    }
+                } else {
+                    printf("  ERROR: Invalid BMP signature\n");
+                }
+            } else {
+                printf("  ERROR: Failed to read BMP header\n");
+            }
+            fclose(file);
+        } else {
+            printf("  ERROR: Could not open file\n");
+        }
+        printf("  Falling back to procedural checkerboard\n");
+    } else {
+        printf("  No filename provided, creating procedural checkerboard\n");
+    }
+    
+    // Fallback: Create a simple checkerboard pattern
+    const int texSize = 512;
+    unsigned char* data = new unsigned char[texSize * texSize * 3];
+    printf("  Allocated checkerboard texture data: %d x %d pixels\n", texSize, texSize);
+    
+    for (int y = 0; y < texSize; y++) {
+        for (int x = 0; x < texSize; x++) {
+            int idx = (y * texSize + x) * 3;
+            int checkerSize = 32;
+            bool check = ((x / checkerSize) + (y / checkerSize)) % 2 == 0;
+            data[idx + 0] = check ? 255 : 64;      // R
+            data[idx + 1] = check ? 128 : 32;      // G
+            data[idx + 2] = check ? 200 : 96;      // B
+        }
+    }
+    
+    GLuint texture;
+    glGenTextures(1, &texture);
+    printf("  Generated OpenGL texture ID for checkerboard: %u\n", texture);
+    
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texSize, texSize, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    
+    delete[] data;
+    printf("=== loadTexture() returning checkerboard texture ID: %u ===\n", texture);
+    return texture;
 }
 
 void BallsDemo::initShadowBuffer(int width, int height) {
@@ -653,7 +812,15 @@ void BallsDemo::renderUI() {
     }
     
     ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "Using CUDA GPU Acceleration!");
+    ImGui::Text("Ball Appearance:");
+    ImGui::Checkbox("Use Texture Mode##balls", &useTextureMode);
+    if (useTextureMode) {
+        ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "Texture mode (ready for texture asset)");
+    } else {
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.5f, 1.0f), "Beach ball pattern mode");
+    }
+    
+    ImGui::Separator();
     if (useBVH) {
         ImGui::Text("BVH tree for hierarchical collision detection");
     } else {
@@ -759,10 +926,22 @@ void BallsDemo::render3D(int width, int height) {
     GLint viewPosLoc = glGetUniformLocation(ballShader, "viewPos");
     GLint lightDirLoc = glGetUniformLocation(ballShader, "lightDir");
     GLint pointScaleLoc = glGetUniformLocation(ballShader, "pointScale");
+    GLint useTextureLoc = glGetUniformLocation(ballShader, "useTexture");
+    GLint ballTextureLoc = glGetUniformLocation(ballShader, "ballTexture");
     
     glUniformMatrix4fv(projLoc, 1, GL_FALSE, projection);
     glUniformMatrix4fv(viewLoc, 1, GL_FALSE, view);
     glUniform3f(viewPosLoc, camPos.x, camPos.y, camPos.z);
+    glUniform1i(useTextureLoc, useTextureMode ? 1 : 0);
+    
+    if (useTextureMode && ballTexture == 0) {
+        printf("WARNING: useTextureMode is true but ballTexture is 0\n");
+    }
+    
+    // Bind ball texture
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, ballTexture);
+    glUniform1i(ballTextureLoc, 0);
     
     // Transform light direction to view space so it stays constant relative to camera
     // Extract rotation part of view matrix (upper 3x3) and apply inverse (transpose for rotation)

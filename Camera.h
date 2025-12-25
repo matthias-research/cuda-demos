@@ -6,6 +6,14 @@
 // Camera
 // by Matthias Müller
 
+// Camera state for saving/restoring camera position and orientation
+struct CameraState {
+    Vec3 pos;
+    Vec3 forward;
+    Vec3 right;
+    Vec3 up;
+};
+
 // ---------------------------------------------------------------------------------------
 class Camera
 {
@@ -29,6 +37,9 @@ public:
     void handleKey(const bool keyDown[256]);
     void handleWheel(int rotation);
     void setupMatrices(int width, int height);
+    
+    CameraState getState() const;
+    void setState(const CameraState& state);
 
     Vec3 pos;
     Vec3 forward;

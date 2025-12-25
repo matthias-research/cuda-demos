@@ -25,12 +25,14 @@ int currentDemoIndex = 0;  // Start with Bunny scene (faster to load)
 // Camera for 3D demos
 Camera camera;
 bool keyDown[256] = {false};
+int firstMouseX = 0;
+int firstMouseY = 0;
 int lastMouseX = 0;
 int lastMouseY = 0;
 bool isMouseDragging = false;
 bool isRightMouseDragging = false;
 bool isMiddleMouseDragging = false;
-float cameraSpeed = 10.0f;
+float cameraSpeed = 1.0f;
 Vec3 cameraPos = Vec3(0.0f, 15.0f, 35.0f);
 Vec3 orbitCenter(0.0f, 0.0f, 0.0f);  // Center point for camera orbit
 
@@ -41,6 +43,11 @@ struct cudaGraphicsResource* cuda_pbo_resource;
 
 // UI state
 bool showUI = true;
+bool isFullscreen = false;
+int windowedWidth = 1920;
+int windowedHeight = 1080;
+int windowedPosX = 100;
+int windowedPosY = 100;
 float fps = 0.0f;
 int frameCount = 0;
 float lastTime = 0.0f;
@@ -48,51 +55,58 @@ float lastTime = 0.0f;
 // GPU info (cached at startup)
 std::string gpuName;
 
-// Video recording
-FILE* ffmpegPipe = nullptr;
+// Multpile video recording
+struct CameraView {
+    Vec3 pos;
+    Vec3 lookAt;
+};
+std::vector<CameraView> recordingViews;
+std::vector<FILE*> ffmpegPipes;
+
+
 GLbyte* pixelBuffer = nullptr;
 int pixelBufferSize = 0;
 bool isRecording = false;
 
 void startRecording() {
-    char cmd[1024];
-    sprintf_s(cmd, 1024, "ffmpeg -r 30 -f rawvideo -pix_fmt rgba -s %ix%i -i - -threads 0 -preset fast -y -pix_fmt yuv420p -crf 21 -vf vflip output.mp4",
-        windowWidth, windowHeight);
+    // Add current camera view as first recording view if not already there
+    CameraView currentView;
+    currentView.pos = camera.pos;
+    currentView.lookAt = camera.pos + camera.forward;
+    if (recordingViews.empty())
+        recordingViews.insert(recordingViews.begin(), currentView);
     
-    ffmpegPipe = _popen(cmd, "wb");
-    if (ffmpegPipe) {
-        isRecording = true;
-        std::cout << "Started recording to output.mp4 (" << windowWidth << "x" << windowHeight << " @ 30fps)\n";
-    } else {
-        std::cerr << "Failed to start ffmpeg. Make sure ffmpeg is installed and in PATH.\n";
-        isRecording = false;
+    ffmpegPipes.assign(recordingViews.size(), nullptr);
+    char cmd[1024];
+
+    for (int i = 0; i < (int)recordingViews.size(); i++) {
+        sprintf_s(cmd, 1024, "D:/bin/ffmpeg/bin/ffmpeg -r 30 -f rawvideo -pix_fmt rgba -s %ix%i -i - -threads 0 -preset fast -y -pix_fmt yuv420p -crf 21 -vf vflip output%i.mp4",
+            windowWidth, windowHeight, i);
+    
+        ffmpegPipes[i] = _popen(cmd, "wb");
+        if (ffmpegPipes[i]) {
+            isRecording = true;
+            std::cout << "Started recording to output.mp4 (" << windowWidth << "x" << windowHeight << " @ 30fps)\n";
+        } else {
+            std::cerr << "Failed to start ffmpeg. Make sure ffmpeg is installed and in PATH.\n";
+            isRecording = false;
+        }
     }
 }
 
 void stopRecording() {
-    if (ffmpegPipe) {
-        _pclose(ffmpegPipe);
-        ffmpegPipe = nullptr;
-        std::cout << "Recording stopped. Video saved to output.mp4\n";
+    for (int i = 0; i < (int)ffmpegPipes.size(); i++) {
+        FILE* ffmpegPipe = ffmpegPipes[i];
+        if (ffmpegPipe) {
+            _pclose(ffmpegPipe);
+            ffmpegPipes[i] = nullptr;
+        }
     }
+    std::cout << "Recording stopped.\n";
     isRecording = false;
 }
 
-void captureFrame() {
-    if (!isRecording || !ffmpegPipe) return;
-    
-    int bufferSize = windowWidth * windowHeight * 4;
-    if (pixelBufferSize != bufferSize) {
-        if (pixelBuffer != nullptr)
-            free(pixelBuffer);
-        pixelBuffer = (GLbyte*)malloc(bufferSize);
-        pixelBufferSize = bufferSize;
-    }
-    
-    glReadBuffer(GL_BACK);
-    glReadPixels(0, 0, windowWidth, windowHeight, GL_RGBA, GL_UNSIGNED_BYTE, pixelBuffer);
-    fwrite(pixelBuffer, bufferSize, 1, ffmpegPipe);
-}
+
 
 void initPixelBuffer() {
     if (pbo != 0) {
@@ -120,25 +134,7 @@ void initPixelBuffer() {
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-void display() {
-    // Calculate delta time
-    static float lastFrameTime = 0.0f;
-    float currentTime = glutGet(GLUT_ELAPSED_TIME) / 1000.0f;
-    float deltaTime = currentTime - lastFrameTime;
-    deltaTime = 1.0f / 30.0f; // fixed frame rate
-    lastFrameTime = currentTime;
-    
-    // Update FPS
-    frameCount++;
-    if (currentTime - lastTime >= 1.0f) {
-        fps = frameCount / (currentTime - lastTime);
-        frameCount = 0;
-        lastTime = currentTime;
-    }
-    
-    // Update current demo
-    demos[currentDemoIndex]->update(deltaTime);
-    
+void render() {
     // Update camera matrices for 3D demos
     if (demos[currentDemoIndex]->is3D()) {
         camera.setupMatrices(windowWidth, windowHeight);
@@ -192,8 +188,9 @@ void display() {
         glDisable(GL_TEXTURE_2D);
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
     }
-    
-    // ImGui rendering
+}
+
+void renderGUI() {
     if (showUI) {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGLUT_NewFrame();
@@ -241,16 +238,75 @@ void display() {
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     }
+}
+
+void display() {
+    // Calculate delta time
+    static float lastFrameTime = 0.0f;
+    float currentTime = glutGet(GLUT_ELAPSED_TIME) / 1000.0f;
+    float deltaTime = currentTime - lastFrameTime;
+    deltaTime = 1.0f / 30.0f; // fixed frame rate
+    lastFrameTime = currentTime;
     
-    glutSwapBuffers();
-    
-    // Capture frame for video recording
-    if (isRecording) {
-        captureFrame();
+    // Update FPS
+    frameCount++;
+    if (currentTime - lastTime >= 1.0f) {
+        fps = frameCount / (currentTime - lastTime);
+        frameCount = 0;
+        lastTime = currentTime;
     }
     
+    // Update current demo
+    demos[currentDemoIndex]->update(deltaTime);
+    
+    // Update camera matrices for 3D demos
+    if (demos[currentDemoIndex]->is3D()) {
+        camera.setupMatrices(windowWidth, windowHeight);
+    }
+
+    // Capture frame for video recording (before rendering display)
+    if (isRecording) {
+        // store current camera state
+        CameraState originalCameraState = camera.getState();
+
+        for (int i = 0; i < (int)recordingViews.size(); i++) {
+            // Set camera to recording view
+            camera.lookAt(recordingViews[i].pos, recordingViews[i].lookAt);
+            camera.setupMatrices(windowWidth, windowHeight);
+            
+            render();
+            
+            // Capture frame from back buffer BEFORE swap
+            FILE* ffmpegPipe = ffmpegPipes[i];
+            if (ffmpegPipe) {
+                int bufferSize = windowWidth * windowHeight * 4;
+                if (pixelBufferSize != bufferSize) {
+                    if (pixelBuffer != nullptr)
+                        free(pixelBuffer);
+                    pixelBuffer = (GLbyte*)malloc(bufferSize);
+                    pixelBufferSize = bufferSize;
+                }
+                
+                glReadBuffer(GL_BACK);
+                glReadPixels(0, 0, windowWidth, windowHeight, GL_RGBA, GL_UNSIGNED_BYTE, pixelBuffer);
+                fwrite(pixelBuffer, bufferSize, 1, ffmpegPipe);
+            }
+        }
+        // Restore original camera state
+        camera.setState(originalCameraState);
+    }
+    
+    // Render main display with original camera
+    if (demos[currentDemoIndex]->is3D()) {
+        camera.setupMatrices(windowWidth, windowHeight);
+    }
+    render();
+    renderGUI();
+    
+    glutSwapBuffers();
     glutPostRedisplay();
 }
+
 
 void keyboard(unsigned char key, int x, int y) {
     // Let ImGui handle input first
@@ -291,8 +347,30 @@ void keyboard(unsigned char key, int x, int y) {
                 startRecording();
             }
             break;
+        case 'c':
+        case 'C':
+            {
+                // Print current camera position and view for copying into code
+                Vec3 lookAtPoint = camera.pos + camera.forward;
+                std::cout << "\n=== Camera Data ===\n";
+                std::cout << "CameraView view;\n";
+                std::cout << "view.pos = Vec3(" << camera.pos.x << "f, " << camera.pos.y << "f, " << camera.pos.z << "f);\n";
+                std::cout << "view.lookAt = Vec3(" << lookAtPoint.x << "f, " << lookAtPoint.y << "f, " << lookAtPoint.z << "f);\n";
+                std::cout << "recordingViews.push_back(view);\n";
+                std::cout << "==================\n\n";
+            }
+            break;
         case 27: // ESC
             exit(0);
+            break;
+        case '-':
+            camera.speed *= 0.5f;
+            std::cout << "Camera speed: " << cameraSpeed << "\n";
+            break;
+        case '+':
+        case '=': // '+' is often Shift+'=' on US keyboards
+            camera.speed *= 2.0f;
+            std::cout << "Camera speed: " << cameraSpeed << "\n";
             break;
         default:
             // Track keys for camera (3D demos)
@@ -324,6 +402,28 @@ void specialKeys(int key, int x, int y) {
     if (ImGui::GetCurrentContext()) {
         ImGuiIO& io = ImGui::GetIO();
         if (io.WantCaptureKeyboard) return;
+    }
+    
+    // Handle F11 for fullscreen toggle
+    if (key == GLUT_KEY_F11) {
+        if (!isFullscreen) {
+            // Enter fullscreen
+            windowedWidth = windowWidth;
+            windowedHeight = windowHeight;
+            windowedPosX = glutGet(GLUT_WINDOW_X);
+            windowedPosY = glutGet(GLUT_WINDOW_Y);
+            glutFullScreenToggle();
+            isFullscreen = true;
+            std::cout << "Entered fullscreen mode\n";
+        } else {
+            // Exit fullscreen
+            glutFullScreenToggle();
+            glutReshapeWindow(windowedWidth, windowedHeight);
+            glutPositionWindow(windowedPosX, windowedPosY);
+            isFullscreen = false;
+            std::cout << "Exited fullscreen mode\n";
+        }
+        return;
     }
     
     // Pass to current demo (arrow keys, etc.)
@@ -388,6 +488,8 @@ void mouse(int button, int state, int x, int y) {
                 isMouseDragging = true;
                 lastMouseX = x;
                 lastMouseY = y;
+                firstMouseX = x;
+                firstMouseY = y;
             } else {
                 isMouseDragging = false;
             }
@@ -406,6 +508,8 @@ void mouse(int button, int state, int x, int y) {
                 isRightMouseDragging = true;
                 lastMouseX = x;
                 lastMouseY = y;
+                firstMouseX = x;
+                firstMouseY = y;
             } else {
                 isRightMouseDragging = false;
             }
@@ -452,10 +556,14 @@ void motion(int x, int y) {
 }
 
 void mouseWheel(int wheel, int direction, int x, int y) {
-    // Let ImGui handle input first
+    // Let ImGui handle input first - check if ImGui wants to capture the mouse
     if (ImGui::GetCurrentContext()) {
         ImGuiIO& io = ImGui::GetIO();
-        if (io.WantCaptureMouse) return;
+        if (io.WantCaptureMouse) {
+            // ImGui is handling this - let it scroll its windows
+            io.MouseWheel += (float)direction;
+            return;
+        }
     }
     
     // Handle camera input for 3D demos
@@ -507,6 +615,8 @@ int main(int argc, char** argv) {
     std::cout << "  2: Mandelbrot Fractal (CUDA)\n";
     std::cout << "  H: Hide/show UI\n";
     std::cout << "  R: Start/stop video recording\n";
+    std::cout << "  C: Print current camera data (for copying into code)\n";
+    std::cout << "  F11: Toggle fullscreen\n";
     std::cout << "  ESC: Exit\n\n";
     std::cout << "3D Camera (Balls demo):\n";
     std::cout << "  WASD: Move, Q/E: Up/Down\n";
@@ -518,7 +628,48 @@ int main(int argc, char** argv) {
     std::cout << "  Mouse wheel: Zoom\n";
     std::cout << "  Click and drag: Pan\n";
     std::cout << "  Arrow keys: Pan\n\n";
-    
+
+    CameraView view;
+    view.pos = Vec3(552.277f, 13.1818f, 105.545f);
+    view.lookAt = Vec3(551.305f, 13.1161f, 105.319f);
+    recordingViews.push_back(view);
+
+    view.pos = Vec3(554.63f, 8.11139f, -100.143f);
+    view.lookAt = Vec3(553.63f, 8.11275f, -100.111f);
+    recordingViews.push_back(view);
+
+    view.pos = Vec3(151.184f, 111.745f, 173.01f);
+    view.lookAt = Vec3(150.548f, 111.221f, 172.443f);
+    recordingViews.push_back(view);
+
+    view.pos = Vec3(-134.652f, 35.2789f, 328.636f);
+    view.lookAt = Vec3(-134.506f, 34.8219f, 327.759f);
+    recordingViews.push_back(view);
+
+    view.pos = Vec3(-613.602f, 274.37f, 135.411f);
+    view.lookAt = Vec3(-613.003f, 273.586f, 135.254f);
+    recordingViews.push_back(view);
+
+    view.pos = Vec3(-540.227f, 376.178f, 28.0081f);
+    view.lookAt = Vec3(-539.81f, 375.27f, 27.9771f);
+    recordingViews.push_back(view);
+
+    view.pos = Vec3(-231.047f, 462.044f, -186.361f);
+    view.lookAt = Vec3(-231.059f, 461.058f, -186.197f);
+    recordingViews.push_back(view);
+
+    view.pos = Vec3(178.221f, 381.355f, -95.3574f);
+    view.lookAt = Vec3(177.684f, 380.531f, -95.1756f);
+    recordingViews.push_back(view);
+
+    view.pos = Vec3(-3.61601f, 675.034f, -307.222f);
+    view.lookAt = Vec3(-3.61118f, 674.106f, -306.849f);
+    recordingViews.push_back(view);
+
+    view.pos = Vec3(537.731f, 301.081f, 21.8237f);
+    view.lookAt = Vec3(537.133f, 300.28f, 21.8193f);
+    recordingViews.push_back(view);
+
     SetProcessDPIAware();
 
     // Initialize GLUT
@@ -627,12 +778,18 @@ int main(int argc, char** argv) {
     camera.speed = cameraSpeed;
     
     // Create demos
+    BallsDemoDescriptor wembleyDesc;
+    wembleyDesc.setupWembleyScene();
+    auto wembleyDemo = std::make_unique<BallsDemo>(wembleyDesc);
+    wembleyDemo->setName("Balls: Wembley");
+    demos.push_back(std::move(wembleyDemo));
+
     BallsDemoDescriptor cityDesc;
     cityDesc.setupCityScene();
     auto cityDemo = std::make_unique<BallsDemo>(cityDesc);
     cityDemo->setName("Balls: City");
     demos.push_back(std::move(cityDemo));
-    
+
     BallsDemoDescriptor bunnyDesc;
     bunnyDesc.setupBunnyScene();
     auto bunnyDemo = std::make_unique<BallsDemo>(bunnyDesc);
