@@ -990,10 +990,6 @@ void BallsDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
     deviceData->hashCellFirst.resize(HASH_SIZE, false);
     deviceData->hashCellLast.resize(HASH_SIZE, false);
     
-    // Allocate BVH bounds buffers
-    deviceData->ballBoundsLowers.resize(demoDesc.numBalls, false);
-    deviceData->ballBoundsUppers.resize(demoDesc.numBalls, false);
-    
     // Allocate collision correction buffers
     deviceData->posCorr.resize(demoDesc.numBalls, false);
     deviceData->newAngVel.resize(demoDesc.numBalls, false);
@@ -1186,6 +1182,11 @@ void BallsDemo::updateCudaPhysics(float dt,
 
     if (useBVH) {
         // BVH-based collision detection
+
+        if (deviceData->ballBoundsLowers.size != demoDesc.numBalls) {
+            deviceData->ballBoundsLowers.resize(demoDesc.numBalls, false);
+            deviceData->ballBoundsUppers.resize(demoDesc.numBalls, false);
+        }
 
         // Compute bounds for each ball
         kernel_computeBallBounds << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData);

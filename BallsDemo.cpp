@@ -27,6 +27,7 @@ out vec4 quat;
 out vec3 viewRight;
 out vec3 viewUp;
 flat out float shadowValue;
+flat out float pointSize;
 
 void main()
 {
@@ -44,7 +45,8 @@ void main()
     
     // Calculate point size based on radius and distance
     float dist = length(eyeSpacePos.xyz);
-    gl_PointSize = aRadius * (pointScale / dist);
+    pointSize = aRadius * (pointScale / dist);
+    gl_PointSize = pointSize;
 }
 )";
 
@@ -63,6 +65,7 @@ in vec3 fragPos;
 in float radius;
 in vec3 eyePos;
 in vec4 quat;
+flat in float pointSize;
 in vec3 viewRight;
 flat in float shadowValue;
 
@@ -108,7 +111,7 @@ void main()
     if (useTexture) {
         float phi = atan(rotNormal.z, rotNormal.x); 
         float u = phi / (2.0 * PI) + 0.5;
-        float v = acos(rotNormal.y) / PI;        
+        float v = acos(clamp(rotNormal.y, -1.0, 1.0)) / PI;
         color = texture(ballTexture, vec2(u, v)).rgb;
     } 
     else {
@@ -134,19 +137,34 @@ void main()
     }
     
     // Phong lighting
+
     float diffuse = max(0.0, dot(lightDir, normal));
     
     vec3 halfwayDir = normalize(lightDir - axisZ);
     float specular = pow(max(dot(normal, halfwayDir), 0.0), 100.0);
     
     float ambient = 0.4;
+
+    // blend out to reduce flickering
+    float s0 = 5.0;
+    float s1 = 10.0;
+    float r = 1.0;
+
+    if (pointSize < s0) 
+        r = 0.0;
+    else if (pointSize < s1)
+    {
+        r = (pointSize - s0) / (s1 - s0);
+    }
+    color = r * color + (1.0 - r) * vec3(0.8, 0.8, 0.8);
     
     vec3 finalColor = color * (ambient + diffuse * 0.6) + vec3(1.0) * specular * 0.5;
     
     // Apply shadow darkening if ball is in shadow
-    finalColor *= (1.0 - shadowValue * 0.5);
+    // finalColor *= (1.0 - shadowValue * 0.5);
     
     fragColor = vec4(finalColor, 1.0);
+
 }
 )";
 
@@ -444,7 +462,9 @@ GLuint BallsDemo::loadTexture(const std::string& filename) {
                             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
                             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
                             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-                            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+                            //glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                            //glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
                             
                             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, imageData);
                             glGenerateMipmap(GL_TEXTURE_2D);

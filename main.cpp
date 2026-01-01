@@ -630,44 +630,32 @@ int main(int argc, char** argv) {
     std::cout << "  Arrow keys: Pan\n\n";
 
     CameraView view;
-    view.pos = Vec3(552.277f, 13.1818f, 105.545f);
-    view.lookAt = Vec3(551.305f, 13.1161f, 105.319f);
+    view.pos = Vec3(-66.5887f, 3.4982f, 9.16852f);
+    view.lookAt = Vec3(-65.7013f, 3.48499f, 8.7078f);
     recordingViews.push_back(view);
 
-    view.pos = Vec3(554.63f, 8.11139f, -100.143f);
-    view.lookAt = Vec3(553.63f, 8.11275f, -100.111f);
+    view.pos = Vec3(-7.32572f, 142.486f, 123.562f);
+    view.lookAt = Vec3(-7.33354f, 141.764f, 122.87f);
     recordingViews.push_back(view);
 
-    view.pos = Vec3(151.184f, 111.745f, 173.01f);
-    view.lookAt = Vec3(150.548f, 111.221f, 172.443f);
+    view.pos = Vec3(-130.012f, 42.0612f, 51.1639f);
+    view.lookAt = Vec3(-129.103f, 41.7302f, 50.9125f);
     recordingViews.push_back(view);
 
-    view.pos = Vec3(-134.652f, 35.2789f, 328.636f);
-    view.lookAt = Vec3(-134.506f, 34.8219f, 327.759f);
+    view.pos = Vec3(-87.8799f, 37.5279f, 81.9208f);
+    view.lookAt = Vec3(-87.2442f, 37.1737f, 81.235f);
     recordingViews.push_back(view);
 
-    view.pos = Vec3(-613.602f, 274.37f, 135.411f);
-    view.lookAt = Vec3(-613.003f, 273.586f, 135.254f);
+    view.pos = Vec3(-6.60138f, 228.066f, 68.5438f);
+    view.lookAt = Vec3(-6.58619f, 227.112f, 68.2443f);
     recordingViews.push_back(view);
 
-    view.pos = Vec3(-540.227f, 376.178f, 28.0081f);
-    view.lookAt = Vec3(-539.81f, 375.27f, 27.9771f);
+    view.pos = Vec3(-136.697f, 39.275f, -8.86788f);
+    view.lookAt = Vec3(-135.721f, 39.0689f, -8.79783f);
     recordingViews.push_back(view);
 
-    view.pos = Vec3(-231.047f, 462.044f, -186.361f);
-    view.lookAt = Vec3(-231.059f, 461.058f, -186.197f);
-    recordingViews.push_back(view);
-
-    view.pos = Vec3(178.221f, 381.355f, -95.3574f);
-    view.lookAt = Vec3(177.684f, 380.531f, -95.1756f);
-    recordingViews.push_back(view);
-
-    view.pos = Vec3(-3.61601f, 675.034f, -307.222f);
-    view.lookAt = Vec3(-3.61118f, 674.106f, -306.849f);
-    recordingViews.push_back(view);
-
-    view.pos = Vec3(537.731f, 301.081f, 21.8237f);
-    view.lookAt = Vec3(537.133f, 300.28f, 21.8193f);
+    view.pos = Vec3(-18.2398f, 361.58f, 24.1573f);
+    view.lookAt = Vec3(-18.1383f, 360.598f, 23.9948f);
     recordingViews.push_back(view);
 
     SetProcessDPIAware();

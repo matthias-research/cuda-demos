@@ -59,7 +59,7 @@ struct BallsDemoDescriptor
     {
         fileName = "city.glb";
 
-        numBalls = 50000000;
+        numBalls = 1000000;
         gravity = 9.8f;
         bounce = 0.85f;  // Coefficient of restitution
         friction = 1.0f; // no friction
@@ -95,23 +95,24 @@ struct BallsDemoDescriptor
         fileName = "wembley.glb";
         ballTextureName = "soccerBall.bmp";
 
-        numBalls = 10000;
+//        numBalls = 70000000;
+        numBalls = 1000000;
         gravity = 9.8f;
         bounce = 0.85f;  // Coefficient of restitution
         friction = 1.0f; // no friction
         terminalVelocity = 10.0f;
-        meshAmbient = 0.7f;
+        meshAmbient = 0.5f;
         lightAzimuth = 82.0f * 3.14159265f / 180.0f;
         lightElevation = 26.875f * 3.14159265f / 180.0f;
         sunAzimuth = 283.25f * 3.14159265f / 180.0f;
         sunElevation = 26.25f * 3.14159265f / 180.0f;
 
         // Ball size parameters
-        minRadius = 1.0f;
-        maxRadius = 1.0f;
+        minRadius = 0.12f;
+        maxRadius = 0.12f;
 
         // Camera clipping planes
-        cameraNear = 10.0f;
+        cameraNear = 1.0f;
         cameraFar = 10000.0f;
 
         sunDirection = Vec3(0.3f, 0.8f, 0.3f).normalized();
