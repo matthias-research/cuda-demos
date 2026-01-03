@@ -150,12 +150,12 @@ void main()
     float s1 = 10.0;
     float r = 1.0;
 
-    if (pointSize < s0) 
-        r = 0.0;
-    else if (pointSize < s1)
-    {
-        r = (pointSize - s0) / (s1 - s0);
-    }
+    //if (pointSize < s0) 
+    //    r = 0.0;
+    //else if (pointSize < s1)
+    //{
+    //    r = (pointSize - s0) / (s1 - s0);
+    //}
     color = r * color + (1.0 - r) * vec3(0.8, 0.8, 0.8);
     
     vec3 finalColor = color * (ambient + diffuse * 0.6) + vec3(1.0) * specular * 0.5;

@@ -108,8 +108,8 @@ struct BallsDemoDescriptor
         sunElevation = 26.25f * 3.14159265f / 180.0f;
 
         // Ball size parameters
-        minRadius = 0.12f;
-        maxRadius = 0.12f;
+        minRadius = 0.11f;
+        maxRadius = 0.11f;
 
         // Camera clipping planes
         cameraNear = 1.0f;
@@ -118,11 +118,11 @@ struct BallsDemoDescriptor
         sunDirection = Vec3(0.3f, 0.8f, 0.3f).normalized();
 
         sceneBounds = Bounds3(Vec3(-200.0f, 0.0f, -200.0f), Vec3(200.0f, 600.0f, 200.0f));
-        ballsBounds = Bounds3(Vec3(-20.0f, 0.0f, -20.0f), Vec3(20.0f, 300.0f, 20.0f));
+        ballsBounds = Bounds3(Vec3(-80.0f, 40.0f, -70.0f), Vec3(80.0f, 300.0f, -50.0f));
 
         cameraPos = Vec3(0.0f, 100.0f, 200.0f);
         cameraLookAt = Vec3(0.0f, 50.0f, 0.0f);
-        useBakedLighting = false;
+        useBakedLighting = true;
     }
 
     void setupBunnyScene()
