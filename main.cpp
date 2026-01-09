@@ -20,7 +20,7 @@ unsigned int windowHeight = 1536;
 
 // Demo management
 std::vector<std::unique_ptr<Demo>> demos;
-int currentDemoIndex = 0;  // Start with Bunny scene (faster to load)
+int currentDemoIndex = 2;  // Start with Bunny scene (faster to load)
 
 // Camera for 3D demos
 Camera camera;
@@ -345,6 +345,21 @@ void keyboard(unsigned char key, int x, int y) {
                 stopRecording();
             } else {
                 startRecording();
+            }
+            break;
+        case 'd':
+        case 'D':
+            if (currentDemoIndex < demos.size() && demos[currentDemoIndex]) {
+                Demo* demo = demos[currentDemoIndex].get();
+                BallsDemo* ballsDemo = dynamic_cast<BallsDemo*>(demo);
+                if (ballsDemo) {
+                    ballsDemo->exportBallsToFile("balls.bin");
+                    std::cout << "Exported balls to balls.bin\n";
+                } else {
+                    std::cout << "Ball export only available in BallsDemo\n";
+                }
+            } else {
+                std::cout << "No demo loaded\n";
             }
             break;
         case 'c':

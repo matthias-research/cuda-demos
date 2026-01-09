@@ -96,7 +96,7 @@ struct BallsDemoDescriptor
         ballTextureName = "soccerBall.bmp";
 
 //        numBalls = 70000000;
-        numBalls = 1000000;
+        numBalls = 1000;
         gravity = 9.8f;
         bounce = 0.85f;  // Coefficient of restitution
         friction = 1.0f; // no friction
@@ -118,7 +118,7 @@ struct BallsDemoDescriptor
         sunDirection = Vec3(0.3f, 0.8f, 0.3f).normalized();
 
         sceneBounds = Bounds3(Vec3(-200.0f, 0.0f, -200.0f), Vec3(200.0f, 600.0f, 200.0f));
-        ballsBounds = Bounds3(Vec3(-80.0f, 40.0f, -70.0f), Vec3(80.0f, 300.0f, -50.0f));
+        ballsBounds = Bounds3(Vec3(-20.0f, 10.0f, -20.0f), Vec3(20.0f, 300.0f, 20.0f));
 
         cameraPos = Vec3(0.0f, 100.0f, 200.0f);
         cameraLookAt = Vec3(0.0f, 50.0f, 0.0f);
@@ -129,7 +129,7 @@ struct BallsDemoDescriptor
     {
         fileName = "bunny.glb";
 
-        numBalls = 500;
+        numBalls = 100;
         gravity = 9.8f;
         bounce = 0.85f;  // Coefficient of restitution
         friction = 1.0f; // no friction
@@ -228,6 +228,7 @@ public:
     void updateCudaPhysics(float dt, cudaGraphicsResource* vboResource, bool useBVH);
     void cleanupCudaPhysics(cudaGraphicsResource* vboResource);
     bool cudaRaycast(const Ray& ray, float& t);
+    void exportBallsToFile(const std::string& filename);
     
     const char* getName() const override { return customName.c_str(); }
     bool is3D() const override { return true; }

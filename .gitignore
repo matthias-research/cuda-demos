@@ -48,6 +48,7 @@ $RECYCLE.BIN/
 *.fatbin
 
 *.mp4
+*.bin
 
 cliff.glb
 *.blend1

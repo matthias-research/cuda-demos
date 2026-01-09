@@ -138,7 +138,7 @@ __device__ inline int hashPosition(const Vec3& pos, float gridSpacing, float wor
     return h;
 }
 
-// Kernel 1: Integrate - save previous position and predict new position (PBD)
+// Integrate - save previous position and predict new position (PBD)
 __global__ void kernel_integrate(BallsDeviceData data, float dt, Vec3 gravity, float friction, float terminalVelocity) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
@@ -171,7 +171,7 @@ __global__ void kernel_integrate(BallsDeviceData data, float dt, Vec3 gravity, f
     ballData[2] = pos.z;
 }
 
-// Kernel: Compute bounds for each ball for BVH construction
+// Compute bounds for each ball for BVH construction
 __global__ void kernel_computeBallBounds(BallsDeviceData data) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
@@ -190,7 +190,7 @@ __global__ void kernel_computeBallBounds(BallsDeviceData data) {
     data.ballBoundsUppers[idx] = Vec4(upper.x, upper.y, upper.z, 0.0f);
 }
 
-// Kernel: Compute bounds for each triangle for mesh BVH construction
+// Compute bounds for each triangle for mesh BVH construction
 __global__ void kernel_computeTriangleBounds(BallsDeviceData data) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numMeshTriangles) return;
@@ -223,7 +223,7 @@ __global__ void kernel_computeTriangleBounds(BallsDeviceData data) {
     data.meshTriBoundsUpper[idx] = Vec4(upper.x, upper.y, upper.z, 0.0f);
 }
 
-// Kernel 2: Fill hash values
+// Fill hash values
 __global__ void kernel_fillHash(BallsDeviceData data) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
@@ -239,7 +239,7 @@ __global__ void kernel_fillHash(BallsDeviceData data) {
     data.hashIds[idx] = idx;
 }
 
-// Kernel 3: Setup hash grid cell boundaries
+// Setup hash grid cell boundaries
 __global__ void kernel_setupHash(BallsDeviceData data) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
@@ -322,7 +322,7 @@ __device__ inline void handleBallCollision(
     }
 }
 
-// Kernel 4: Ball-to-ball collision (hash grid)
+// Ball-to-ball collision (hash grid)
 __global__ void kernel_ballCollision(BallsDeviceData data, float bounce) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
@@ -367,56 +367,65 @@ __global__ void kernel_ballCollision(BallsDeviceData data, float bounce) {
     }
 }
 
-// Kernel 5: Wall collision (generalized for arbitrary planes)
-__global__ void kernel_wallCollision(BallsDeviceData data, Bounds3 sceneBounds, float bounce, bool updateAngularVel) {
+__device__ void handlePlaneCollision(Vec3& pos, float radius, Vec3& angVel, const Vec3& vel, const Plane& plane, float restitution, float dt)
+{
+    float signedDist = plane.n.dot(pos) - radius - plane.d;
+    
+    if (signedDist < 0) {
+        pos -= plane.n * signedDist;
+        
+        // restitution
+        float normalVel = vel.dot(plane.n);
+
+        if (normalVel < 0) { // Only if moving towards the wall
+            pos -= normalVel * plane.n * restitution * dt; // Correct position based on velocity
+        }
+        
+        Vec3 tangentialVel = vel - plane.n * plane.n.dot(vel);
+        Vec3 newAngVel = tangentialVel.cross(plane.n) / radius;
+        angVel = newAngVel;
+    }
+}
+
+// Wall collision (generalized for arbitrary planes)
+__global__ void kernel_wallCollision(BallsDeviceData data, Bounds3 sceneBounds, float restitution, float dt, bool updateAngularVel) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (idx >= data.numBalls) return;
-    
-    float* ballData = data.vboData + idx * 14;
-    Vec3 pos(ballData[0], ballData[1], ballData[2]);
-    float radius = ballData[3];
-    
+    if (idx >= data.numBalls) 
+        return;
+        
     // Define 5 walls as planes (normal points inward, n·p + d = 0 on plane)
     // Plane equation: n·p + d = 0, where positive values of (n·p + d) mean "inside the room"
     // No ceiling - open upwards
     Plane walls[5] = {
-        Plane(Vec3(-1, 0, 0),  sceneBounds.maximum.x),    // +X wall (normal points left)
-        Plane(Vec3(1, 0, 0),   -sceneBounds.minimum.x),   // -X wall (normal points right)
-        Plane(Vec3(0, 1, 0),   -sceneBounds.minimum.y),   // Floor (normal points up)
-        Plane(Vec3(0, 0, -1),  sceneBounds.maximum.z),    // +Z wall (normal points forward)
-        Plane(Vec3(0, 0, 1),   -sceneBounds.minimum.z)    // -Z wall (normal points back)
+        Plane(Vec3(-1, 0, 0),  -sceneBounds.maximum.x),    // +X wall (normal points left)
+        Plane(Vec3(1, 0, 0),   sceneBounds.minimum.x),   // -X wall (normal points right)
+        Plane(Vec3(0, 1, 0),   sceneBounds.minimum.y),   // Floor (normal points up)
+        Plane(Vec3(0, 0, -1),  -sceneBounds.maximum.z),    // +Z wall (normal points forward)
+        Plane(Vec3(0, 0, 1),   sceneBounds.minimum.z)    // -Z wall (normal points back)
     };
     
+    float* ballData = data.vboData + idx * 14;
+    Vec3 pos(ballData[0], ballData[1], ballData[2]);
+    Vec3 angVel = data.angVel[idx];
+    
+    float radius = ballData[3];
+
     // Check collision with each wall
     for (int i = 0; i < 5; i++) {
         const Plane& wall = walls[i];
-        
-        // Signed distance from ball center to plane (positive = inside room, negative = outside)
-        float signedDist = wall.n.dot(pos) + wall.d;
-        float penetration = radius - signedDist;
-        
-        if (penetration > 0) {
-            // Position correction: push ball back inside the room (in direction of inward normal)
-            pos += wall.n * penetration;
-            
-            // Update angular velocity for no-slip condition (only on first substep)
-            if (updateAngularVel) {
-                // No-slip: ω = (v × n) / r
-                // Where v is linear velocity, n is wall normal, r is radius
-                Vec3 tangentialVel = data.vel[idx] - wall.n * wall.n.dot(data.vel[idx]);
-                Vec3 newAngVel = tangentialVel.cross(wall.n) / radius;
-                data.angVel[idx] = newAngVel;
-            }
-        }
+
+        handlePlaneCollision(pos, radius, angVel, data.vel[idx], wall, restitution, dt);
     }
     
     // Write back corrected position
+    data.angVel[idx] = angVel;
+
     ballData[0] = pos.x;
     ballData[1] = pos.y;
     ballData[2] = pos.z;
 }
 
-// Kernel: BVH-based ball collision (alternative to hash grid)
+// BVH-based ball collision (alternative to hash grid)
 __global__ void kernel_ballCollision_BVH(BallsDeviceData data, float bounce) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
@@ -475,8 +484,8 @@ __global__ void kernel_ballCollision_BVH(BallsDeviceData data, float bounce) {
     }
 }
 
-// Kernel: Ball-mesh collision using BVH
-__device__ void kernel_ballMeshCollision(BallsDeviceData data, int ballIdx, int meshIdx, float searchRadius) {
+// Ball-mesh collision using BVH
+__device__ void kernel_ballMeshCollision(BallsDeviceData data, int ballIdx, int meshIdx, float searchRadius, float restitution, float dt) {
 
     // Get ball data (read from VBO)
     float* ballData = data.vboData + ballIdx * 14;
@@ -489,7 +498,8 @@ __device__ void kernel_ballMeshCollision(BallsDeviceData data, int ballIdx, int 
     
     // Get root node of triangle BVH
     int rootNode = data.trianglesBvh.mRootNodes[meshIdx];
-    if (rootNode < 0) return;
+    if (rootNode < 0) 
+        return;
         
     // Stack-based BVH traversal
     int stack[64];
@@ -528,20 +538,8 @@ __device__ void kernel_ballMeshCollision(BallsDeviceData data, int ballIdx, int 
                 Vec3 baryCoords = getClosestPointOnTriangle(ballPos, v0, v1, v2);
                 Vec3 point = v0 * baryCoords.x + v1 * baryCoords.y + v2 * baryCoords.z;
 
-                // Check if this point is closer than previous closest
-                Vec3 n = ballPos - point;
-                float d = n.normalize();
-                if (d < radius)
-                {
-                    ballPos += n * (radius - d);
-                    Vec3 triNormal = (v1 - v0).cross(v2 - v0).normalized();
-
-                    // No-slip: ω = (v × n) / r
-                    // Use triangle normal for surface contact
-                    Vec3 tangentialVel = data.vel[ballIdx] - triNormal * triNormal.dot(data.vel[ballIdx]);
-                    Vec3 newAngVel = tangentialVel.cross(triNormal) / radius;
-                    data.angVel[ballIdx] = newAngVel;
-                }
+                Vec3 n = (ballPos - point).normalized();
+                handlePlaneCollision(ballPos, radius, data.angVel[ballIdx], data.vel[ballIdx], Plane(n, n.dot(point)), restitution, dt);
             }
             else {  // Internal node
              // Push children onto stack
@@ -558,8 +556,9 @@ __device__ void kernel_ballMeshCollision(BallsDeviceData data, int ballIdx, int 
     ballData[2] = ballPos.z;
 }
 
-// Kernel: Ball-meshes collision using BVH
-__global__ void kernel_ballMeshesCollision(BallsDeviceData data, float searchRadius) {
+// Ball-meshes collision using BVH
+__global__ void kernel_ballMeshesCollision(BallsDeviceData data, float searchRadius, float restitution, float dt)
+{
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
     
@@ -600,7 +599,7 @@ __global__ void kernel_ballMeshesCollision(BallsDeviceData data, float searchRad
 
             if (lower.b) {  // Leaf node - contains a mesh
                 int meshIdx = leftIndex;
-                kernel_ballMeshCollision(data, idx, meshIdx, searchRadius);
+                kernel_ballMeshCollision(data, idx, meshIdx, searchRadius, restitution, dt);
             }
 
             else {  // Internal node
@@ -614,7 +613,7 @@ __global__ void kernel_ballMeshesCollision(BallsDeviceData data, float searchRad
     }
 }
 
-// Kernel: Apply collision corrections with relaxation (PBD)
+// Apply collision corrections with relaxation (PBD)
 __global__ void kernel_applyCorrections(BallsDeviceData data, float relaxation) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
@@ -642,7 +641,7 @@ __global__ void kernel_applyCorrections(BallsDeviceData data, float relaxation) 
     ballData[2] = pos.z;
 }
 
-// Kernel: Derive velocity from position change (PBD)
+// Derive velocity from position change (PBD)
 __global__ void kernel_deriveVelocity(BallsDeviceData data, float dt) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
@@ -655,7 +654,7 @@ __global__ void kernel_deriveVelocity(BallsDeviceData data, float dt) {
     data.vel[idx] = (pos - data.prevPos[idx]) / dt;
 }
 
-// Kernel 6: Integrate quaternions
+//  Integrate quaternions
 __global__ void kernel_integrateQuaternions(BallsDeviceData data, float dt) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
@@ -828,7 +827,7 @@ __device__ bool kernel_rayTriangleIntersection(
 }
 
 
-// Kernel: Ball-mesh collision using BVH
+// Ball-mesh collision using BVH
 __device__ bool kernel_raycastMesh(BallsDeviceData data, int meshIdx, Ray ray, float& minT) {
 
     int rootNode = data.trianglesBvh.mRootNodes[meshIdx];
@@ -1244,12 +1243,12 @@ void BallsDemo::updateCudaPhysics(float dt,
         const float relaxation = 0.3f;
         kernel_applyCorrections << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, relaxation);
 
-        kernel_wallCollision << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, demoDesc.sceneBounds, demoDesc.bounce, subStep == 0);
+        kernel_wallCollision << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, demoDesc.sceneBounds, demoDesc.bounce, sdt, subStep == 0);
 
         // Ball-mesh collision
         if (deviceData->numMeshTriangles > 0) {
             float meshSearchRadius = 1.0f * deviceData->maxRadius;  // Search radius for mesh collisions
-            kernel_ballMeshesCollision << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, meshSearchRadius);
+            kernel_ballMeshesCollision << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, meshSearchRadius, demoDesc.bounce, sdt);
         }
 
         // Derive velocity from position change (PBD)
@@ -1319,6 +1318,45 @@ bool BallsDemo::cudaRaycast(const Ray& ray, float& minT)
     deviceData->rayCastMinT.getDeviceObject(minT, 0);
 
     return (minT < MaxFloat);
+}
+
+void BallsDemo::exportBallsToFile(const std::string& filename)
+{
+    if (!deviceData || deviceData->numBalls == 0) {
+        std::cerr << "No balls to export\n";
+        return;
+    }
+
+    int numBalls = deviceData->numBalls;
+    
+    // Copy positions from GPU to CPU using vectors
+    std::vector<Vec3> hostPositions;
+    std::vector<float> hostRadii;
+    deviceData->prevPos.get(hostPositions, numBalls);
+    deviceData->radii.get(hostRadii, numBalls);
+    
+    // Write binary file
+    FILE* file;
+    errno_t err = fopen_s(&file, filename.c_str(), "wb");
+    if (err != 0 || !file) {
+        std::cerr << "Failed to open file: " << filename << "\n";
+        return;
+    }
+    
+    // Write number of balls
+    fwrite(&numBalls, sizeof(int32_t), 1, file);
+    
+    // Write position and radius for each ball
+    for (int i = 0; i < numBalls; i++) {
+        fwrite(&hostPositions[i].x, sizeof(float), 1, file);
+        fwrite(&hostPositions[i].y, sizeof(float), 1, file);
+        fwrite(&hostPositions[i].z, sizeof(float), 1, file);
+        fwrite(&hostRadii[i], sizeof(float), 1, file);
+    }
+    
+    fclose(file);
+    
+    std::cout << "Exported " << numBalls << " balls to " << filename << "\n";
 }
 
 
