@@ -655,12 +655,6 @@ void BallsDemo::update(float deltaTime) {
     // Ensure scene is loaded on first use
     ensureSceneLoaded();
     
-    // Track FPS
-    if (lastUpdateTime > 0.0f) {
-        fps = 1.0f / deltaTime;
-    }
-    lastUpdateTime = deltaTime;
-    
     // Update physics on GPU (only if not paused)
     if (!paused && cudaVboResource) {
         updateCudaPhysics(deltaTime, cudaVboResource);
@@ -696,8 +690,6 @@ void BallsDemo::render(uchar4* d_out, int width, int height) {
 
 
 void BallsDemo::renderUI() {
-    ImGui::Text("=== GPU-Accelerated Physics Demo ===");
-    ImGui::Separator();
     
     if (paused) {
         ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "[PAUSED] - Press 'P' to resume");
@@ -706,12 +698,6 @@ void BallsDemo::renderUI() {
     }
     ImGui::Separator();
     
-    ImGui::Text("Performance:");
-    ImGui::Text("  FPS: %.1f", fps);
-    ImGui::Text("  Frame Time: %.2f ms", lastUpdateTime * 1000.0f);
-    ImGui::Text("  Ball Count: %d", demoDesc.numBalls);
-    
-    ImGui::Separator();
     ImGui::Text("Camera Controls:");
     ImGui::Text("  WASD: Move, Q/E: Up/Down");
     ImGui::Text("  Left Mouse: Orbit");
@@ -730,12 +716,6 @@ void BallsDemo::renderUI() {
     ImGui::SliderFloat("Gravity##balls", &demoDesc.gravity, 0.0f, 20.0f, "%.1f");
     ImGui::SliderFloat("Bounce##balls", &demoDesc.bounce, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat("Friction##balls", &demoDesc.friction, 0.8f, 1.0f, "%.3f");
-    ImGui::Text("Scene Bounds: [%.0f, %.0f, %.0f] to [%.0f, %.0f, %.0f]",
-        demoDesc.sceneBounds.minimum.x, demoDesc.sceneBounds.minimum.y, demoDesc.sceneBounds.minimum.z,
-        demoDesc.sceneBounds.maximum.x, demoDesc.sceneBounds.maximum.y, demoDesc.sceneBounds.maximum.z);
-    ImGui::Text("Spawn Bounds: [%.0f, %.0f, %.0f] to [%.0f, %.0f, %.0f]",
-        demoDesc.ballsBounds.minimum.x, demoDesc.ballsBounds.minimum.y, demoDesc.ballsBounds.minimum.z,
-        demoDesc.ballsBounds.maximum.x, demoDesc.ballsBounds.maximum.y, demoDesc.ballsBounds.maximum.z);
     
     ImGui::Separator();
     ImGui::Text("Lighting (Directional):");
@@ -800,7 +780,7 @@ void BallsDemo::renderUI() {
     
     ImGui::Separator();
     if (ImGui::Button("Reset View##balls", ImVec2(200, 0))) {
-        if (camera) camera->resetView();
+        if (camera) camera->lookAt(demoDesc.cameraPos, demoDesc.cameraLookAt);
     }
     
     // Handle ball count change
@@ -823,11 +803,6 @@ void BallsDemo::renderUI() {
     ImGui::Separator();
     ImGui::Text("Ball Appearance:");
     ImGui::Checkbox("Use Texture Mode##balls", &useTextureMode);
-    if (useTextureMode) {
-        ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "Texture mode (ready for texture asset)");
-    } else {
-        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.5f, 1.0f), "Beach ball pattern mode");
-    }
 }
 
 void BallsDemo::reset() {

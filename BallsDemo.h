@@ -54,6 +54,7 @@ struct BallsDemoDescriptor
     std::string fileName = "";
     std::string ballTextureName = "";  // Texture file for ball rendering
     bool useBakedLighting = false;
+    bool useFluidSimulation = false;
 
     void setupCityScene()
     {
@@ -61,8 +62,8 @@ struct BallsDemoDescriptor
 
         numBalls = 1000000;
         gravity = 9.8f;
-        bounce = 0.85f;  // Coefficient of restitution
-        friction = 1.0f; // no friction
+        bounce = 0.85f;
+        friction = 1.0f;
         terminalVelocity = 10.0f;
         meshAmbient = 0.7f;
         lightAzimuth = 82.0f * 3.14159265f / 180.0f;
@@ -80,10 +81,7 @@ struct BallsDemoDescriptor
 
         sunDirection = Vec3(0.3f, 0.8f, 0.3f).normalized();
 
-        // sceneBounds = Bounds3(Vec3(-580.0f, 0.0f, -310.0f), Vec3(600.0f, 600.0f, 310.0f));
-        // tower
         ballsBounds = Bounds3(Vec3(-200.0f, 0.0f, -50.0f), Vec3(-150.0f, 300.0f, 0.0f));
-        // ballsBounds = Bounds3(Vec3(-580.0f, 100.0f, -300.0f), Vec3(500.0f, 300.0f, 300.0f));
 
         cameraPos = Vec3(0.0f, 100.0f, 200.0f);
         cameraLookAt = Vec3(0.0f, 50.0f, 0.0f);
@@ -95,11 +93,10 @@ struct BallsDemoDescriptor
         fileName = "wembley.glb";
         ballTextureName = "soccerBall.bmp";
 
-//        numBalls = 70000000;
         numBalls = 1000;
         gravity = 9.8f;
-        bounce = 0.85f;  // Coefficient of restitution
-        friction = 1.0f; // no friction
+        bounce = 0.85f;
+        friction = 1.0f;
         terminalVelocity = 10.0f;
         meshAmbient = 0.5f;
         lightAzimuth = 82.0f * 3.14159265f / 180.0f;
@@ -131,8 +128,8 @@ struct BallsDemoDescriptor
 
         numBalls = 100;
         gravity = 9.8f;
-        bounce = 0.85f;  // Coefficient of restitution
-        friction = 1.0f; // no friction
+        bounce = 0.85f;
+        friction = 1.0f;
         terminalVelocity = 10.0f;
         meshAmbient = 0.2f;
         lightAzimuth = 1.2f;
@@ -153,8 +150,8 @@ struct BallsDemoDescriptor
         sceneBounds = Bounds3(Vec3(-20.0f, 0.0f, -20.0f), Vec3(20.0f, 50.0f, 20.0f));
         ballsBounds = Bounds3(Vec3(-15.0f, 10.0f, -15.0f), Vec3(15.0f, 300.0f, 15.0f));
         
-        cameraPos = Vec3(0.0f, 30.0f, 50.0f);
-        cameraLookAt = Vec3(0.0f, 15.0f, 0.0f);
+        cameraPos = Vec3(0.0f, 15.0f, 50.0f);
+        cameraLookAt = Vec3(0.0f, 5.0f, 0.0f);
         useBakedLighting = false;
 
         sunDirection = Vec3(0.3f, 1.0f, 0.1f).normalized();
@@ -180,9 +177,6 @@ private:
     cudaGraphicsResource* cudaVboResource = nullptr;
     BVHBuilder* bvhBuilder = nullptr;
     
-    // Performance tracking
-    float lastUpdateTime = 0.0f;
-    float fps = 0.0f;
     bool paused = false;
     
     // Camera (reference to main camera)

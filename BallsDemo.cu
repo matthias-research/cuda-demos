@@ -29,6 +29,7 @@ struct BallsDeviceData {
         hashCellLast.free();
         posCorr.free();
         newAngVel.free();
+        lambdas.free();
         meshFirstTriangle.free();
         meshVertices.free();
         meshTriIds.free();
@@ -55,6 +56,7 @@ struct BallsDeviceData {
         s += hashCellFirst.allocationSize();
         s += hashCellLast.allocationSize();
         s += posCorr.allocationSize();
+        s += lambdas.allocationSize();
         s += newAngVel.allocationSize();
         s += meshFirstTriangle.allocationSize();
         s += meshVertices.allocationSize();
@@ -102,6 +104,7 @@ struct BallsDeviceData {
     // Collision correction buffers (for symmetric resolution)
     DeviceBuffer<Vec3> posCorr;       // Position corrections
     DeviceBuffer<Vec4> newAngVel;     // New angular velocity accumulation (x,y,z = sum, w = count)
+    DeviceBuffer<float> lambdas;   // For fluid constraints
 
     DeviceBuffer<float> rayCastMinT; // Minimum t values for ray casting
     // VBO data (mapped from OpenGL)
@@ -338,6 +341,101 @@ __global__ void kernel_ballCollision(BallsDeviceData data, float bounce) {
         }
     }
 }
+
+
+// Ball-to-ball collision (hash grid)
+
+__global__ void kernel_solveFluid(BallsDeviceData data, bool calcLambda) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx >= data.numBalls) return;
+    
+    // Get ball data (read from VBO)
+    float* ballData = data.vboData + idx * 14;
+    Vec3 pos(ballData[0], ballData[1], ballData[2]);
+    float radius = ballData[3];
+    
+	float particleDiameter = 2 * radius;
+	float restDensity = 1.0 / (particleDiameter * particleDiameter);
+	float kernelRadius = 3.0 * radius;
+    float h = kernelRadius;
+	float h2 = h * h;
+	float kernelScale = 315.0f / (64.0f * Pi * h2 * h2 * h2 * h2 * h);	
+    float density = 0.0f;
+    float lambda = data.lambdas[idx];
+
+    // Compute grid cell
+    int xi = floorf((pos.x - data.worldOrig) / data.gridSpacing);
+    int yi = floorf((pos.y - data.worldOrig) / data.gridSpacing);
+    int zi = floorf((pos.z - data.worldOrig) / data.gridSpacing);
+    
+    Vec3 sumGrad(Zero);
+    float sumGrad2 = 0.0f;
+
+    for (int dx = -1; dx <= 1; dx++) {
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                int cellX = xi + dx;
+                int cellY = yi + dy;
+                int cellZ = zi + dz;
+                
+                unsigned int h = abs((cellX * 92837111) ^ (cellY * 689287499) ^ (cellZ * 283923481)) % HASH_SIZE;
+                
+                int first = data.hashCellFirst[h];
+                int last = data.hashCellLast[h];
+                
+                // Check all particles in this cell
+                for (int i = first; i < last; i++) {
+                    int otherIdx = data.hashIds[i];
+                    
+                    // Get other particle data (read from VBO using index)
+                    float* otherData = data.vboData + otherIdx * 14;
+                    Vec3 otherPos(otherData[0], otherData[1], otherData[2]);
+                    float otherRadius = otherData[3];
+
+                    Vec3 n = otherPos - pos;
+                    float r = n.normalize();
+
+                    Vec3 grad(Zero);
+
+                    if (r < h)
+                    {
+                        float r2 = r * r;
+                        float w = h2 - r2;
+                        density += kernelScale * w * w * w;
+                        float d = (kernelScale * 3.0 * w * w * (-2.0 * r)) / restDensity;
+                        grad = n * d;
+                        sumGrad -= grad;
+                        sumGrad2 += d * d;
+
+                        if (!calcLambda)
+                        {
+                            Vec3 posCorr = grad * lambda;
+                            atomicAdd(&data.posCorr[idx].x, posCorr.x);
+                            atomicAdd(&data.posCorr[idx].y, posCorr.y);
+                            atomicAdd(&data.posCorr[idx].z, posCorr.z);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (calcLambda)
+    {
+        float C = (density / restDensity) - 1.0f;
+        float lambda = -C / (sumGrad2 + 0.0001f);
+        data.lambdas[idx] = lambda;
+        return;
+    }
+    else
+    {
+        Vec3 posCorr = lambda * sumGrad;
+        atomicAdd(&data.posCorr[idx].x, posCorr.x);
+        atomicAdd(&data.posCorr[idx].y, posCorr.y);
+        atomicAdd(&data.posCorr[idx].z, posCorr.z);
+    }
+}
+
 
 __device__ void handlePlaneCollision(Vec3& pos, float radius, Vec3& angVel, const Vec3& vel, const Plane& plane, float restitution, float dt)
 {
@@ -906,6 +1004,7 @@ void BallsDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
     // Allocate collision correction buffers
     deviceData->posCorr.resize(demoDesc.numBalls, false);
     deviceData->newAngVel.resize(demoDesc.numBalls, false);
+    deviceData->lambdas.resize(demoDesc.numBalls, false);
     
     // Initialize memory
     deviceData->vel.setZero();
@@ -1115,16 +1214,22 @@ void BallsDemo::updateCudaPhysics(float dt,
         // Run physics pipeline
         kernel_integrate << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, sdt, Vec3(0.0f, -demoDesc.gravity, 0.0f), demoDesc.friction, demoDesc.terminalVelocity);
 
-        // Zero correction buffers before collision detection
+        // Handle Ball ball collision
         deviceData->posCorr.setZero();
         deviceData->newAngVel.setZero();
 
-        // Hash grid collision detection
         kernel_ballCollision << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, demoDesc.bounce);
 
-        // Apply corrections with relaxation
         const float relaxation = 0.3f;
         kernel_applyCorrections << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, relaxation);
+
+        // Handle fluid interactions 
+        if (demoDesc.useFluidSimulation) {
+            kernel_solveFluid << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, true);
+            deviceData->posCorr.setZero();
+            kernel_solveFluid << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, false);
+            kernel_applyCorrections << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, relaxation);
+        }
 
         kernel_wallCollision << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, demoDesc.sceneBounds, demoDesc.bounce, sdt, subStep == 0);
 

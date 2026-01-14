@@ -33,7 +33,6 @@ bool isMouseDragging = false;
 bool isRightMouseDragging = false;
 bool isMiddleMouseDragging = false;
 float cameraSpeed = 1.0f;
-Vec3 cameraPos = Vec3(0.0f, 15.0f, 35.0f);
 Vec3 orbitCenter(0.0f, 0.0f, 0.0f);  // Center point for camera orbit
 
 // OpenGL buffer object
@@ -776,8 +775,6 @@ int main(int argc, char** argv) {
     
     // Initialize camera
     camera.init();
-    camera.resetView();
-    camera.lookAt(cameraPos, orbitCenter);
     camera.speed = cameraSpeed;
     
     // Create demos
@@ -806,6 +803,11 @@ int main(int argc, char** argv) {
         if (demo->is3D()) {
             demo->setCamera(&camera);
         }
+    }
+    
+    // Apply initial camera settings from first demo
+    if (demos[0]->is3D()) {
+        static_cast<BallsDemo*>(demos[0].get())->applyCameraSettings();
     }
     
     std::cout << "Starting with: " << demos[0]->getName() << "\n\n";
