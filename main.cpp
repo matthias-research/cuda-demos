@@ -20,7 +20,7 @@ unsigned int windowHeight = 1536;
 
 // Demo management
 std::vector<std::unique_ptr<Demo>> demos;
-int currentDemoIndex = 2;  // Start with Bunny scene (faster to load)
+int currentDemoIndex = 0;  // Start with Bunny scene (faster to load)
 
 // Camera for 3D demos
 Camera camera;
@@ -781,6 +781,12 @@ int main(int argc, char** argv) {
     camera.speed = cameraSpeed;
     
     // Create demos
+    BallsDemoDescriptor bunnyDesc;
+    bunnyDesc.setupBunnyScene();
+    auto bunnyDemo = std::make_unique<BallsDemo>(bunnyDesc);
+    bunnyDemo->setName("Balls: Bunny");
+    demos.push_back(std::move(bunnyDemo));
+
     BallsDemoDescriptor wembleyDesc;
     wembleyDesc.setupWembleyScene();
     auto wembleyDemo = std::make_unique<BallsDemo>(wembleyDesc);
@@ -792,12 +798,6 @@ int main(int argc, char** argv) {
     auto cityDemo = std::make_unique<BallsDemo>(cityDesc);
     cityDemo->setName("Balls: City");
     demos.push_back(std::move(cityDemo));
-
-    BallsDemoDescriptor bunnyDesc;
-    bunnyDesc.setupBunnyScene();
-    auto bunnyDemo = std::make_unique<BallsDemo>(bunnyDesc);
-    bunnyDemo->setName("Balls: Bunny");
-    demos.push_back(std::move(bunnyDemo));
     
     demos.push_back(std::make_unique<MandelbrotDemo>());
     

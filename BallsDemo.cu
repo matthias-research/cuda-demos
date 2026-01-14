@@ -27,8 +27,6 @@ struct BallsDeviceData {
         hashIds.free();
         hashCellFirst.free();
         hashCellLast.free();
-        ballBoundsLowers.free();
-        ballBoundsUppers.free();
         posCorr.free();
         newAngVel.free();
         meshFirstTriangle.free();
@@ -56,8 +54,6 @@ struct BallsDeviceData {
         s += hashIds.allocationSize();
         s += hashCellFirst.allocationSize();
         s += hashCellLast.allocationSize();
-        s += ballBoundsLowers.allocationSize();
-        s += ballBoundsUppers.allocationSize();
         s += posCorr.allocationSize();
         s += newAngVel.allocationSize();
         s += meshFirstTriangle.allocationSize();
@@ -88,11 +84,6 @@ struct BallsDeviceData {
     DeviceBuffer<int> hashIds;        // Ball index (gets sorted)
     DeviceBuffer<int> hashCellFirst;  // First ball in each cell
     DeviceBuffer<int> hashCellLast;   // Last ball in each cell
-    
-    // BVH collision detection
-    DeviceBuffer<Vec4> ballBoundsLowers;  // Lower bounds for BVH
-    DeviceBuffer<Vec4> ballBoundsUppers;  // Upper bounds for BVH
-    BVH ballsBvh;                         // BVH structure for balls
     
     // Mesh collision data
     DeviceBuffer<int> meshFirstTriangle; // Starting triangle index per mesh
@@ -169,25 +160,6 @@ __global__ void kernel_integrate(BallsDeviceData data, float dt, Vec3 gravity, f
     ballData[0] = pos.x;
     ballData[1] = pos.y;
     ballData[2] = pos.z;
-}
-
-// Compute bounds for each ball for BVH construction
-__global__ void kernel_computeBallBounds(BallsDeviceData data) {
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (idx >= data.numBalls) return;
-    
-    // Read from VBO
-    float* ballData = data.vboData + idx * 14;
-    Vec3 pos(ballData[0], ballData[1], ballData[2]);
-    float radius = ballData[3];
-    
-    // Create bounds for this ball
-    Vec3 lower = pos - Vec3(radius, radius, radius);
-    Vec3 upper = pos + Vec3(radius, radius, radius);
-    
-    // Store as Vec4 (BVH builder expects Vec4)
-    data.ballBoundsLowers[idx] = Vec4(lower.x, lower.y, lower.z, 0.0f);
-    data.ballBoundsUppers[idx] = Vec4(upper.x, upper.y, upper.z, 0.0f);
 }
 
 // Compute bounds for each triangle for mesh BVH construction
@@ -426,64 +398,6 @@ __global__ void kernel_wallCollision(BallsDeviceData data, Bounds3 sceneBounds, 
 }
 
 // BVH-based ball collision (alternative to hash grid)
-__global__ void kernel_ballCollision_BVH(BallsDeviceData data, float bounce) {
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (idx >= data.numBalls) return;
-    
-    // Get ball data (read from VBO)
-    float* ballData = data.vboData + idx * 14;
-    Vec3 pos(ballData[0], ballData[1], ballData[2]);
-    float radius = ballData[3];
-    
-    // Query bounds (ball position + radius)
-    Bounds3 queryBounds(pos - Vec3(radius, radius, radius), 
-                       pos + Vec3(radius, radius, radius));
-    
-    // Get root node
-    int rootNode = data.ballsBvh.mRootNodes ? data.ballsBvh.mRootNodes[0] : -1;
-    if (rootNode < 0) return;
-    
-    // Stack-based BVH traversal
-    int stack[64];
-    stack[0] = rootNode;
-    int stackCount = 1;
-    
-    while (stackCount > 0) {
-        int nodeIndex = stack[--stackCount];
-        
-        // Get node bounds
-        PackedNodeHalf lower = data.ballsBvh.mNodeLowers[nodeIndex];
-        PackedNodeHalf upper = data.ballsBvh.mNodeUppers[nodeIndex];
-        
-        Bounds3 nodeBounds(Vec3(lower.x, lower.y, lower.z), 
-                          Vec3(upper.x, upper.y, upper.z));
-        
-        // Test intersection with query bounds
-        if (nodeBounds.intersect(queryBounds)) {
-            const int leftIndex = lower.i;
-            const int rightIndex = upper.i;
-            
-            if (lower.b) {  // Leaf node
-                int otherIdx = leftIndex;
-                
-                // Get other ball data (read from VBO using index)
-                float* otherData = data.vboData + otherIdx * 14;
-                Vec3 otherPos(otherData[0], otherData[1], otherData[2]);
-                float otherRadius = otherData[3];
-                
-                // Handle collision using symmetric resolution
-                handleBallCollision(idx, otherIdx, pos, radius, otherPos, otherRadius, bounce, data);
-            } else {  // Internal node
-                // Push children onto stack
-                if (stackCount < 63) {  // Prevent stack overflow
-                    stack[stackCount++] = leftIndex;
-                    stack[stackCount++] = rightIndex;
-                }
-            }
-        }
-    }
-}
-
 // Ball-mesh collision using BVH
 __device__ void kernel_ballMeshCollision(BallsDeviceData data, int ballIdx, int meshIdx, float searchRadius, float restitution, float dt) {
 
@@ -1164,7 +1078,7 @@ void BallsDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
 }
 
 void BallsDemo::updateCudaPhysics(float dt,
-                                   cudaGraphicsResource* vboResource, bool useBVH) {
+                                   cudaGraphicsResource* vboResource) {
     if (deviceData->numBalls == 0) return;
     
     int numBlocks = (deviceData->numBalls + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
@@ -1178,43 +1092,18 @@ void BallsDemo::updateCudaPhysics(float dt,
     // Update VBO pointer
     deviceData->vboData = d_vboData;
     
+    // Hash grid collision detection
+    kernel_fillHash << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData);
 
-    if (useBVH) {
-        // BVH-based collision detection
+    // Sort by hash
+    thrust::device_ptr<int> hashVals(deviceData->hashVals.buffer);
+    thrust::device_ptr<int> hashIds(deviceData->hashIds.buffer);
+    thrust::sort_by_key(hashVals, hashVals + deviceData->numBalls, hashIds);
 
-        if (deviceData->ballBoundsLowers.size != demoDesc.numBalls) {
-            deviceData->ballBoundsLowers.resize(demoDesc.numBalls, false);
-            deviceData->ballBoundsUppers.resize(demoDesc.numBalls, false);
-        }
+    deviceData->hashCellFirst.setZero();
+    deviceData->hashCellLast.setZero();
 
-        // Compute bounds for each ball
-        kernel_computeBallBounds << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData);
-
-        // Build BVH
-        if (g_bvhBuilder) {
-            g_bvhBuilder->build(deviceData->ballsBvh,
-                deviceData->ballBoundsLowers.buffer,
-                deviceData->ballBoundsUppers.buffer,
-                deviceData->numBalls,
-                nullptr,  // No grouping
-                0);
-        }
-    }
-    else {
-        // Hash grid collision detection
-
-        kernel_fillHash << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData);
-
-        // Sort by hash
-        thrust::device_ptr<int> hashVals(deviceData->hashVals.buffer);
-        thrust::device_ptr<int> hashIds(deviceData->hashIds.buffer);
-        thrust::sort_by_key(hashVals, hashVals + deviceData->numBalls, hashIds);
-
-        deviceData->hashCellFirst.setZero();
-        deviceData->hashCellLast.setZero();
-
-        kernel_setupHash << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData);
-    }
+    kernel_setupHash << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData);
 
     int numSubSteps = 5;
 
@@ -1230,14 +1119,8 @@ void BallsDemo::updateCudaPhysics(float dt,
         deviceData->posCorr.setZero();
         deviceData->newAngVel.setZero();
 
-        if (useBVH) {
-            // BVH-based collision (accumulates corrections)
-            kernel_ballCollision_BVH << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, demoDesc.bounce);
-        }
-        else {
-            // Hash grid collision detection
-            kernel_ballCollision << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, demoDesc.bounce);
-        }
+        // Hash grid collision detection
+        kernel_ballCollision << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, demoDesc.bounce);
 
         // Apply corrections with relaxation
         const float relaxation = 0.3f;

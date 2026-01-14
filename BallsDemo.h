@@ -178,7 +178,6 @@ private:
     
     // CUDA resources
     cudaGraphicsResource* cudaVboResource = nullptr;
-    bool useBVH = false;  // Toggle between BVH and hash grid collision
     BVHBuilder* bvhBuilder = nullptr;
     
     // Performance tracking
@@ -225,7 +224,7 @@ public:
 
     // CUDA physics functions (implemented in BallsDemo.cu)
     void initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene);
-    void updateCudaPhysics(float dt, cudaGraphicsResource* vboResource, bool useBVH);
+    void updateCudaPhysics(float dt, cudaGraphicsResource* vboResource);
     void cleanupCudaPhysics(cudaGraphicsResource* vboResource);
     bool cudaRaycast(const Ray& ray, float& t);
     void exportBallsToFile(const std::string& filename);

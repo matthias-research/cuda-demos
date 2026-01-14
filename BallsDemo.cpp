@@ -663,7 +663,7 @@ void BallsDemo::update(float deltaTime) {
     
     // Update physics on GPU (only if not paused)
     if (!paused && cudaVboResource) {
-        updateCudaPhysics(deltaTime, cudaVboResource, useBVH);
+        updateCudaPhysics(deltaTime, cudaVboResource);
     }
 }
 
@@ -736,17 +736,6 @@ void BallsDemo::renderUI() {
     ImGui::Text("Spawn Bounds: [%.0f, %.0f, %.0f] to [%.0f, %.0f, %.0f]",
         demoDesc.ballsBounds.minimum.x, demoDesc.ballsBounds.minimum.y, demoDesc.ballsBounds.minimum.z,
         demoDesc.ballsBounds.maximum.x, demoDesc.ballsBounds.maximum.y, demoDesc.ballsBounds.maximum.z);
-    
-    ImGui::Separator();
-    ImGui::Text("Collision Detection Method:");
-    if (ImGui::RadioButton("Hash Grid (Fast)##balls", !useBVH)) {
-        useBVH = false;
-    }
-    ImGui::SameLine();
-    if (ImGui::RadioButton("BVH (Compare)##balls", useBVH)) {
-        useBVH = true;
-    }
-    ImGui::Text("  %s", useBVH ? "Using BVH tree traversal" : "Using spatial hash grid");
     
     ImGui::Separator();
     ImGui::Text("Lighting (Directional):");
@@ -838,13 +827,6 @@ void BallsDemo::renderUI() {
         ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "Texture mode (ready for texture asset)");
     } else {
         ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.5f, 1.0f), "Beach ball pattern mode");
-    }
-    
-    ImGui::Separator();
-    if (useBVH) {
-        ImGui::Text("BVH tree for hierarchical collision detection");
-    } else {
-        ImGui::Text("Spatial hash grid for O(n) collisions");
     }
 }
 
