@@ -17,7 +17,6 @@ x86/
 
 # Visual Studio cache/options
 .vs/
-.vscode/
 
 # Visual Studio profiler
 *.psess
