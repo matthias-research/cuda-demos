@@ -684,61 +684,7 @@ __global__ void kernel_initBalls(BallsDeviceData data, Bounds3 ballsBounds, floa
 }
 
 
-__device__ bool kernel_rayBoundsIntersection(Bounds3 bounds, Ray ray)
-{
-    float tEntry = -MaxFloat;
-    float tExit = MaxFloat;
-
-    for (int i = 0; i < 3; ++i)
-    {
-        if (ray.dir[i] != 0.0f)
-        {
-            float t1 = (bounds.minimum[i] - ray.orig[i]) / ray.dir[i];
-            float t2 = (bounds.maximum[i] - ray.orig[i]) / ray.dir[i];
-
-            tEntry = Max(tEntry, Min(t1, t2));
-            tExit = Min(tExit, Max(t1, t2));
-        }
-        else if (ray.orig[i] < bounds.minimum[i] || ray.orig[i] > bounds.maximum[i])
-            return false;
-    }
-
-    return tExit > 0.0f && tEntry < tExit;
-}
-
-
 //-----------------------------------------------------------------------------
-__device__ bool kernel_rayTriangleIntersection(
-    const Ray& ray, const Vec3& a, const Vec3& b, const Vec3& c, float& t, float& u, float& v)
-{
-    t = MaxFloat;
-
-    Vec3 edge1, edge2, tvec, pvec, qvec;
-    float det, inv_det;
-
-    edge1 = b - a;
-    edge2 = c - a;
-    pvec = ray.dir.cross(edge2);
-    det = edge1.dot(pvec);
-
-    if (det == 0.0f)
-        return false;
-    inv_det = 1.0f / det;
-    tvec = ray.orig - a;
-
-    u = tvec.dot(pvec) * inv_det;
-    if (u < 0.0f || u > 1.0f)
-        return false;
-
-    qvec = tvec.cross(edge1);
-    v = ray.dir.dot(qvec) * inv_det;
-    if (v < 0.0f || u + v > 1.0f)
-        return false;
-
-    t = edge2.dot(qvec) * inv_det;
-
-    return true;
-}
 
 
 // Ball-mesh collision using BVH
@@ -763,7 +709,7 @@ __device__ bool kernel_raycastMesh(BallsDeviceData data, int meshIdx, Ray ray, f
         Bounds3 nodeBounds(Vec3(lower.x, lower.y, lower.z),
             Vec3(upper.x, upper.y, upper.z));
         
-        if (kernel_rayBoundsIntersection(nodeBounds, ray))
+        if (rayBoundsIntersection(nodeBounds, ray))
         {
             const int leftIndex = lower.i;
             const int rightIndex = upper.i;
@@ -783,7 +729,7 @@ __device__ bool kernel_raycastMesh(BallsDeviceData data, int meshIdx, Ray ray, f
 
                 float t, u, v;
 
-                if (kernel_rayTriangleIntersection(ray, v0, v1, v2, t, u, v))
+                if (rayTriangleIntersection(ray, v0, v1, v2, t, u, v))
                 {
                     hit = true;
                     if (t > 0.0f && t < minT)
@@ -832,7 +778,7 @@ __global__ void kernel_raycast(BallsDeviceData data, bool useBalls, Ray ray)
 
         Bounds3 bounds(Vec3(lower.x, lower.y, lower.z), Vec3(upper.x, upper.y, upper.z));
 
-        if (kernel_rayBoundsIntersection(bounds, ray))
+        if (rayBoundsIntersection(bounds, ray))
         {
            const int leftIndex = lower.i;
            const int rightIndex = upper.i;
@@ -868,24 +814,24 @@ __global__ void kernel_raycast(BallsDeviceData data, bool useBalls, Ray ray)
     }
 }
 
-
-
-
 // Host functions callable from BallsDemo.cpp
 
-static BVHBuilder* g_bvhBuilder = nullptr;
-
-void BallsDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene) {
+void BallsDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, Scene* scene) {
     // Ensure any previous CUDA operations are complete
     cudaDeviceSynchronize();
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         printf("CUDA error before init: %s\n", cudaGetErrorString(err));
     }
+
+    if (!deviceData) 
+        deviceData = std::make_shared<BallsDeviceData>();
+    if (!bvhBuilder) 
+        bvhBuilder = std::make_shared<BVHBuilder>();
     
     deviceData->numBalls = demoDesc.numBalls;
     deviceData->worldOrig = -100.0f;
-    g_bvhBuilder = bvhBuilder;
+    this->bvhBuilder = bvhBuilder;
     
     // Use provided maximum radius
     deviceData->maxRadius = demoDesc.maxRadius;
@@ -1041,9 +987,9 @@ void BallsDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
             cudaDeviceSynchronize();
 
             // Build BVH for meshes
-            if (g_bvhBuilder) {
+            if (bvhBuilder) {
                 printf("Building BVH for %d meshes...\n", deviceData->numMeshes);
-                g_bvhBuilder->build(deviceData->meshesBvh,
+                bvhBuilder->build(deviceData->meshesBvh,
                     deviceData->meshBoundsLower.buffer,
                     deviceData->meshBoundsUpper.buffer,
                     deviceData->numMeshes,
@@ -1052,9 +998,9 @@ void BallsDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
             }
             
             // Build BVH for triangles
-            if (g_bvhBuilder) {
+            if (bvhBuilder) {
                 printf("Building BVH for %d triangles...\n", totalTriangles);
-                g_bvhBuilder->build(deviceData->trianglesBvh,
+                bvhBuilder->build(deviceData->trianglesBvh,
                     deviceData->meshTriBoundsLower.buffer,
                     deviceData->meshTriBoundsUpper.buffer,
                     totalTriangles,
@@ -1169,16 +1115,17 @@ void BallsDemo::cleanupCudaPhysics(cudaGraphicsResource* vboResource) {
     }
     
     // Free all device memory using DeviceBuffer::free()
-    deviceData->free();
-    
-    // CRITICAL: Reset numBalls to 0 to clear global state
-    // This prevents stray code from thinking old buffers are still valid
-    deviceData->numBalls = 0;
-    deviceData->numMeshTriangles = 0;
-        
-    // Zero out VBO pointer
-    deviceData->vboData = nullptr;
-    g_bvhBuilder = nullptr;
+    if (deviceData) {
+        deviceData->numBalls = 0;
+        deviceData->numMeshTriangles = 0;
+
+        deviceData->vboData = nullptr;
+        deviceData->free();
+        deviceData.reset();
+    }
+    if (bvhBuilder) {
+        bvhBuilder.reset();
+    }
     
     // Unregister VBO
     if (vboResource) {

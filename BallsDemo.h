@@ -1,9 +1,9 @@
 #pragma once
 
+#include <memory>
 #include "Demo.h"
 #include "Camera.h"
 #include "Vec.h"
-#include "BVH.h"
 #include "Scene.h"
 #include "Renderer.h"
 #include "Skybox.h"
@@ -163,6 +163,7 @@ struct BallsDemoDescriptor
 
 
 struct BallsDeviceData;
+class BVHBuilder;
 
 class BallsDemo : public Demo {
 private:
@@ -178,7 +179,6 @@ private:
     
     // CUDA resources
     cudaGraphicsResource* cudaVboResource = nullptr;
-    BVHBuilder* bvhBuilder = nullptr;
     
     // Performance tracking
     float lastUpdateTime = 0.0f;
@@ -187,7 +187,8 @@ private:
     
     // Camera (reference to main camera)
     Camera* camera = nullptr;
-    BallsDeviceData* deviceData = nullptr;
+    std::shared_ptr<BallsDeviceData> deviceData = nullptr;
+    std::shared_ptr<BVHBuilder> bvhBuilder = nullptr;
 
     // Lighting
 
@@ -223,7 +224,7 @@ public:
     void ensureSceneLoaded();  // Load scene on first use
 
     // CUDA physics functions (implemented in BallsDemo.cu)
-    void initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, BVHBuilder* bvhBuilder, Scene* scene);
+    void initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, Scene* scene);
     void updateCudaPhysics(float dt, cudaGraphicsResource* vboResource);
     void cleanupCudaPhysics(cudaGraphicsResource* vboResource);
     bool cudaRaycast(const Ray& ray, float& t);

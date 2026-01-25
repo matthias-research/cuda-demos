@@ -104,6 +104,7 @@
     <ClCompile Include="Camera.cpp" />
     <ClCompile Include="MandelbrotDemo.cpp" />
     <ClCompile Include="BallsDemo.cpp" />
+    <ClCompile Include="FluidDemo.cpp" />
     <ClCompile Include="Mesh.cpp" />
     <ClCompile Include="Scene.cpp" />
     <ClCompile Include="Renderer.cpp" />
@@ -119,6 +120,7 @@
     <ClInclude Include="RigidBodyKernels.h" />
     <ClInclude Include="MandelbrotDemo.h" />
     <ClInclude Include="BallsDemo.h" />
+    <ClInclude Include="FluidDemo.h" />
     <ClInclude Include="Mesh.h" />
     <ClInclude Include="Scene.h" />
     <ClInclude Include="Renderer.h" />
@@ -129,6 +131,7 @@
     <CudaCompile Include="RigidBody.cu" />
     <CudaCompile Include="MandelbrotDemo.cu" />
     <CudaCompile Include="BallsDemo.cu" />
+    <CudaCompile Include="FluidDemo.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

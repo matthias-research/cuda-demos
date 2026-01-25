@@ -81,3 +81,58 @@ CUDA_CALLABLE inline Vec3 getClosestPointOnTriangle(
 
     return Vec3(1.0f - x - y, x, y);
 }
+
+CUDA_CALLABLE inline bool rayBoundsIntersection(Bounds3 bounds, Ray ray)
+{
+    float tEntry = -MaxFloat;
+    float tExit = MaxFloat;
+
+    for (int i = 0; i < 3; ++i)
+    {
+        if (ray.dir[i] != 0.0f)
+        {
+            float t1 = (bounds.minimum[i] - ray.orig[i]) / ray.dir[i];
+            float t2 = (bounds.maximum[i] - ray.orig[i]) / ray.dir[i];
+
+            tEntry = Max(tEntry, Min(t1, t2));
+            tExit = Min(tExit, Max(t1, t2));
+        }
+        else if (ray.orig[i] < bounds.minimum[i] || ray.orig[i] > bounds.maximum[i])
+            return false;
+    }
+
+    return tExit > 0.0f && tEntry < tExit;
+}
+
+
+CUDA_CALLABLE inline bool rayTriangleIntersection(
+    const Ray& ray, const Vec3& a, const Vec3& b, const Vec3& c, float& t, float& u, float& v)
+{
+    t = MaxFloat;
+
+    Vec3 edge1, edge2, tvec, pvec, qvec;
+    float det, inv_det;
+
+    edge1 = b - a;
+    edge2 = c - a;
+    pvec = ray.dir.cross(edge2);
+    det = edge1.dot(pvec);
+
+    if (det == 0.0f)
+        return false;
+    inv_det = 1.0f / det;
+    tvec = ray.orig - a;
+
+    u = tvec.dot(pvec) * inv_det;
+    if (u < 0.0f || u > 1.0f)
+        return false;
+
+    qvec = tvec.cross(edge1);
+    v = ray.dir.dot(qvec) * inv_det;
+    if (v < 0.0f || u + v > 1.0f)
+        return false;
+
+    t = edge2.dot(qvec) * inv_det;
+
+    return true;
+}

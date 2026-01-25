@@ -1,4 +1,5 @@
 #include "BallsDemo.h"
+#include "BVH.h"
 #include <imgui.h>
 #include <cuda_runtime.h>
 #include <iostream>
@@ -231,7 +232,7 @@ static GLuint compileShader(GLenum type, const char* source) {
 BallsDemo::BallsDemo(const BallsDemoDescriptor& desc) : vao(0), vbo(0), ballShader(0), ballShadowShader(0), 
                          shadowFBO(0), shadowTexture(0), shadowWidth(0), shadowHeight(0) {
     demoDesc = desc;
-    bvhBuilder = new BVHBuilder();
+        bvhBuilder = std::make_shared<BVHBuilder>();
     
     // Initialize mesh renderer
     renderer = new Renderer();
@@ -247,9 +248,6 @@ BallsDemo::BallsDemo(const BallsDemoDescriptor& desc) : vao(0), vbo(0), ballShad
         skybox = nullptr;
         showSkybox = false;
     }
-    
-    // Allocate GPU device data structure using factory
-    deviceData = createBallsDeviceData();
     
     paused = true;  // Start in paused mode
     
@@ -290,7 +288,7 @@ void BallsDemo::ensureSceneLoaded() {
         if (cudaVboResource) {
             cleanupCudaPhysics(cudaVboResource);
         }
-        initCudaPhysics(vbo, &cudaVboResource, bvhBuilder, scene);
+        initCudaPhysics(vbo, &cudaVboResource, scene);
         lastInitializedBallCount = demoDesc.numBalls;
     }
 }
@@ -298,13 +296,6 @@ void BallsDemo::ensureSceneLoaded() {
 BallsDemo::~BallsDemo() {
     if (cudaVboResource) {
         cleanupCudaPhysics(cudaVboResource);
-    }
-    if (deviceData) {
-        deleteBallsDeviceData(deviceData);
-        deviceData = nullptr;
-    }
-    if (bvhBuilder) {
-        delete bvhBuilder;
     }
     if (scene) {
         scene->cleanup();
@@ -324,7 +315,7 @@ BallsDemo::~BallsDemo() {
 void BallsDemo::initBalls() {
     // Initialize CUDA physics with the VBO
     if (vbo != 0) {
-        initCudaPhysics(vbo, &cudaVboResource, bvhBuilder, scene);
+        initCudaPhysics(vbo, &cudaVboResource, scene);
     }
 }
 

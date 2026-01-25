@@ -13,6 +13,7 @@
 #include "Camera.h"
 #include "MandelbrotDemo.h"
 #include "BallsDemo.h"
+#include "FluidDemo.h"
 
 // Window dimensions (can change on resize)
 unsigned int windowWidth = 2048;
@@ -217,7 +218,9 @@ void renderGUI() {
                 currentDemoIndex = i;
                 std::cout << "Switched to: " << demos[i]->getName() << "\n";
                 if (demos[i]->is3D()) {
-                    static_cast<BallsDemo*>(demos[i].get())->applyCameraSettings();
+                    if (auto ballsDemo = dynamic_cast<BallsDemo*>(demos[i].get())) {
+                        ballsDemo->applyCameraSettings();
+                    }
                 }
             }
         }
@@ -800,6 +803,7 @@ int main(int argc, char** argv) {
     demos.push_back(std::move(cityDemo));
     
     demos.push_back(std::make_unique<MandelbrotDemo>());
+    demos.push_back(std::make_unique<FluidDemo>());
     
     // Set camera for 3D demos
     for (auto& demo : demos) {
