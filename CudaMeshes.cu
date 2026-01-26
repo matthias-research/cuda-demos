@@ -1,5 +1,4 @@
 #include "CudaMeshes.h"
-#include "CudaUtils.h"
 #include <cuda_runtime.h>
 #include <vector>
 #include "BVH.h"
@@ -7,40 +6,6 @@
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
 
-
-struct MeshesDeviceData 
-{
-    void free()  // no destructor because cuda would call it in the kernels
-    {
-        numMeshes = 0;
-        numMeshTriangles = 0;
-
-        firstTriangle.free();
-        vertices.free();
-        triIds.free();
-        boundsLower.free();
-        boundsUpper.free();
-        triBoundsLower.free();
-        triBoundsUpper.free();
-        trianglesBvh.free();
-        rayCastMinT.free();
-    }
-        
-    int numMeshes = 0;
-    int numMeshTriangles = 0;
-    
-    DeviceBuffer<int> firstTriangle; // Starting triangle index per mesh
-    DeviceBuffer<Vec3> vertices;      // Concatenated vertices from all scene meshes
-    DeviceBuffer<int> triIds;         // Triangle indices (groups of 3)
-    
-    DeviceBuffer<Vec4> triBoundsLower; // Lower bounds for each triangle
-    DeviceBuffer<Vec4> triBoundsUpper; // Upper bounds for each triangle
-    DeviceBuffer<Vec4> boundsLower;   // Overall mesh bounds
-    DeviceBuffer<Vec4> boundsUpper;   // Overall mesh bounds
-    BVH meshesBvh;                        // BVH structure for entire meshes
-    BVH trianglesBvh;                      // Separate BVH for triangles
-    DeviceBuffer<float> rayCastMinT; // Minimum t values for ray casting
-};
 
 // Compute bounds for each triangle for mesh BVH construction
 __global__ void kernel_computeTriangleBounds(MeshesDeviceData data) {
@@ -75,140 +40,8 @@ __global__ void kernel_computeTriangleBounds(MeshesDeviceData data) {
     data.triBoundsUpper[idx] = Vec4(upper.x, upper.y, upper.z, 0.0f);
 }
 
-__device__ void kernel_handleCollision(MeshesDeviceData data, float* pos, float* radii, int stride, float defaultRadius, int particleIdx, int meshIdx, float searchRadius) {
 
-    float* posPtr = pos + particleIdx * stride;
-    Vec3 pos(posPtr[0], posPtr[1], posPtr[2]);
-
-    float radius = defaultRadius;
-    if (radii) {
-        float* radiiPtr = radii + particleIdx * stride;
-        radius = radiiPtr[0];
-    }
-    
-    Bounds3 queryBounds(pos - Vec3(searchRadius, searchRadius, searchRadius), 
-                       pos + Vec3(searchRadius, searchRadius, searchRadius));
-    
-    int rootNode = data.trianglesBvh.mRootNodes[meshIdx];
-    if (rootNode < 0) 
-        return;
-        
-    // Stack-based BVH traversal
-    int stack[64];
-    stack[0] = rootNode;
-    int stackCount = 1;
-    
-    while (stackCount > 0) {
-        int nodeIndex = stack[--stackCount];
-
-        // Get node bounds
-        PackedNodeHalf lower = data.trianglesBvh.mNodeLowers[nodeIndex];
-        PackedNodeHalf upper = data.trianglesBvh.mNodeUppers[nodeIndex];
-
-        Bounds3 nodeBounds(Vec3(lower.x, lower.y, lower.z),
-            Vec3(upper.x, upper.y, upper.z));
-
-        // Test intersection with query bounds
-        if (nodeBounds.intersect(queryBounds)) {
-            const int leftIndex = lower.i;
-            const int rightIndex = upper.i;
-
-            if (lower.b) {  // Leaf node - contains a triangle
-                int triIdx = leftIndex;
-
-                // Get the three vertex indices for this triangle
-                int i0 = data.triIds[triIdx * 3 + 0];
-                int i1 = data.triIds[triIdx * 3 + 1];
-                int i2 = data.triIds[triIdx * 3 + 2];
-
-                // Get the three vertices
-                Vec3 v0 = data.vertices[i0];
-                Vec3 v1 = data.vertices[i1];
-                Vec3 v2 = data.vertices[i2];
-
-                // Compute closest point on triangle to particle position
-                Vec3 baryCoords = getClosestPointOnTriangle(pos, v0, v1, v2);
-                Vec3 closestPoint = v0 * baryCoords.x + v1 * baryCoords.y + v2 * baryCoords.z;
-
-                Vec3 n = (pos - closestPoint);
-                float dist = n.normalize();
-
-                if (dist < radius)
-                {
-                    pos += n * (radius - dist);
-                }
-            }
-            else {  // Internal node
-                if (stackCount < 63) {  // Prevent stack overflow
-                    stack[stackCount++] = leftIndex;
-                    stack[stackCount++] = rightIndex;
-                }
-            }
-        }
-    }
-    particleData[0] = pos.x;
-    particleData[1] = pos.y;
-    particleData[2] = pos.z;
-}
-
-// Particle-meshes collision using BVH
-__global__ void kernel_particleMeshesCollision(
-    MeshesDeviceData data, int numParticles, float* particlePos, int stride, float radius, float searchRadius)
-{
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (idx >= numParticles) 
-    return;
-    
-    if (data.numMeshTriangles == 0) return;
-    
-    float* particleData = particlePos + idx * stride;
-    Vec3 pos(particleData[0], particleData[1], particleData[2]);
-    
-    // Query bounds (particle position + search radius)
-    Bounds3 queryBounds(pos - Vec3(searchRadius, searchRadius, searchRadius), 
-                       pos + Vec3(searchRadius, searchRadius, searchRadius));
-    
-    // Get root node of meshes BVH
-    int rootNode = data.meshesBvh.mRootNodes[0];
-    if (rootNode < 0) return;
-        
-    // Stack-based BVH traversal
-    int stack[64];
-    stack[0] = rootNode;
-    int stackCount = 1;
-    
-    while (stackCount > 0) {
-        int nodeIndex = stack[--stackCount];
-
-        // Get node bounds
-        PackedNodeHalf lower = data.meshesBvh.mNodeLowers[nodeIndex];
-        PackedNodeHalf upper = data.meshesBvh.mNodeUppers[nodeIndex];
-
-        Bounds3 nodeBounds(Vec3(lower.x, lower.y, lower.z),
-            Vec3(upper.x, upper.y, upper.z));
-
-        // Test intersection with query bounds
-        if (nodeBounds.intersect(queryBounds)) {
-            const int leftIndex = lower.i;
-            const int rightIndex = upper.i;
-
-            if (lower.b) {  // Leaf node - contains a mesh
-                int meshIdx = leftIndex;
-                kernel_particleMeshCollision(data, particlePos, stride, radius, idx, meshIdx, searchRadius);
-            }
-
-            else {  // Internal node
-             // Push children onto stack
-                if (stackCount < 63) {  // Prevent stack overflow
-                    stack[stackCount++] = leftIndex;
-                    stack[stackCount++] = rightIndex;
-                }
-            }
-        }
-    }
-}
-
-__device__ bool kernel_raycast(MeshesDeviceData data, int meshIdx, Ray ray, float& minT) {
+__device__ bool kernel_raycastMesh(MeshesDeviceData data, int meshIdx, Ray ray, float& minT) {
 
     int rootNode = data.trianglesBvh.mRootNodes[meshIdx];
     if (rootNode < 0)
@@ -271,8 +104,18 @@ __device__ bool kernel_raycast(MeshesDeviceData data, int meshIdx, Ray ray, floa
 }
 
 
-__global__ void kernel_raycastMeshes(MeshesDeviceData data, Ray ray)
+__global__ void kernel_raycastMeshes(MeshesDeviceData data, int numRays, float* positions, Ray ray, float* hits, int stride)
 {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx >= numRays) 
+        return;
+
+    if (positions)
+    {
+        float* posPtr = positions + idx * stride;
+        ray.orig = Vec3(posPtr[0], posPtr[1], posPtr[2]);
+    }
+
     float minT = MaxFloat;
     int stack[64];
     stack[0] = data.meshesBvh.mRootNodes[0];
@@ -303,7 +146,7 @@ __global__ void kernel_raycastMeshes(MeshesDeviceData data, Ray ray)
            }
         }
     }
-    data.rayCastMinT[0] = minT;
+    hits[idx * stride] = minT;
 }
 
 // Host functions 
@@ -390,8 +233,8 @@ void CudaMeshes::initialize(const Scene* scene)
             deviceData->triIds.set(hostTriIds);
             deviceData->numMeshTriangles = totalTriangles;
 
-            deviceData->boundsLower.set(meshBoundsLower);
-            deviceData->boundsUpper.set(meshBoundsUpper);
+            deviceData->meshBoundsLower.set(meshBoundsLower);
+            deviceData->meshBoundsUpper.set(meshBoundsUpper);
             
             // Allocate triangle bounds buffers
             deviceData->triBoundsLower.resize(totalTriangles, false);
@@ -406,8 +249,8 @@ void CudaMeshes::initialize(const Scene* scene)
             if (bvhBuilder) {
                 printf("Building BVH for %d meshes...\n", deviceData->numMeshes);
                 bvhBuilder->build(deviceData->meshesBvh,
-                    deviceData->boundsLower.buffer,
-                    deviceData->boundsUpper.buffer,
+                    deviceData->meshBoundsLower.buffer,
+                    deviceData->meshBoundsUpper.buffer,
                     deviceData->numMeshes,
                     nullptr, 0); // No grouping
                 printf("Mesh BVH built: %d nodes\n", deviceData->meshesBvh.mNumNodes);
@@ -430,28 +273,15 @@ void CudaMeshes::initialize(const Scene* scene)
     }
 }
 
-bool CudaMeshes::rayCast(const Ray& ray, float& minT)
+bool CudaMeshes::rayCast(int numRays, float* positions, const Ray& ray, float* hits, int stride)
 {
     if (deviceData->numMeshTriangles == 0)
         return false;
 
-    deviceData->rayCastMinT.resize(1, false);
+    kernel_raycastMeshes << <numRays / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK >> > (*deviceData, numRays, positions, ray, hits, stride);
 
-    kernel_raycast << <1 / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK >> > (*deviceData, false, ray);
-    deviceData->rayCastMinT.getDeviceObject(minT, 0);
-
-    return (minT < MaxFloat);
+    return true;
 }
-
-void CudaMeshes::handleCollisions(int numParticles, float* positions, int stride,
-    float* radii, float defaultRadius, float searchDist)
-{
-    kernel_meshesCollision << <m_deviceData->numPoints / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK >> > (
-        *m_deviceData);
-
-
-}
-
 
 void CudaMeshes::cleanup() 
 {

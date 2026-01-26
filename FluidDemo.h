@@ -1,3 +1,5 @@
+#pragma once
+
 #include <string>
 #include <memory>
 #include "Vec.h"
@@ -6,7 +8,6 @@
 #include <cuda_gl_interop.h>
 #include "Scene.h"
 #include "Demo.h"
-
 
 struct FluidDemoDescriptor {
     int numParticles = 100000;
@@ -51,11 +52,8 @@ struct FluidDemoDescriptor {
 };
 
 
-#pragma once
-
-
 struct FluidDeviceData;
-class BVHBuilder;
+class CudaMeshes;
 
 class FluidDemo : public Demo {
 public:
@@ -85,7 +83,7 @@ public:
 
 private:
     std::shared_ptr<FluidDeviceData> deviceData = nullptr;
-    std::shared_ptr<BVHBuilder> bvhBuilder = nullptr;
+    std::shared_ptr<CudaMeshes> meshes = nullptr;
     FluidDemoDescriptor demoDesc;
     std::string customName = "Fluid Demo";
 };

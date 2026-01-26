@@ -1,5 +1,6 @@
 #include "BallsDemo.h"
 #include "CudaUtils.h"
+#include "CudaMeshes.h"
 #include "BVH.h"
 #include "Scene.h"
 #include "Mesh.h"
@@ -15,14 +16,13 @@
 // Hash grid parameters
 static const int HASH_SIZE = 37000111;  // Prime number for better distribution
 
+static const int VBO_STRIDE = 14;// Interleaved: pos(3), radius(1), color(3), quat(4), pad(3) = 14 floats
+
 // Device data structure - all simulation state on GPU
 struct BallsDeviceData {
     void free()  // no destructor because cuda would call it in the kernels
     {
         numBalls = 0;
-        numMeshes = 0;
-        numMeshTriangles = 0;
-
         vel.free();
         prevPos.free();
         angVel.free();
@@ -33,16 +33,7 @@ struct BallsDeviceData {
         hashCellLast.free();
         posCorr.free();
         newAngVel.free();
-        meshFirstTriangle.free();
-        meshVertices.free();
-        meshTriIds.free();
-        meshBoundsLower.free();
-        meshBoundsUpper.free();
-        meshTriBoundsLower.free();
-        meshTriBoundsUpper.free();
-        meshesBvh.free();
-        trianglesBvh.free();
-        rayCastMinT.free();
+        raycastHit.free();
     }
     
     size_t allocationSize() const
@@ -58,14 +49,6 @@ struct BallsDeviceData {
         s += hashCellLast.allocationSize();
         s += posCorr.allocationSize();
         s += newAngVel.allocationSize();
-        s += meshFirstTriangle.allocationSize();
-        s += meshVertices.allocationSize();
-        s += meshTriIds.allocationSize();
-        s += meshBoundsLower.allocationSize();
-        s += meshBoundsUpper.allocationSize();
-        s += meshTriBoundsLower.allocationSize();
-        s += meshTriBoundsUpper.allocationSize();
-        s += rayCastMinT.allocationSize();
         return s;
     }
     
@@ -86,28 +69,15 @@ struct BallsDeviceData {
     DeviceBuffer<int> hashIds;        // Ball index (gets sorted)
     DeviceBuffer<int> hashCellFirst;  // First ball in each cell
     DeviceBuffer<int> hashCellLast;   // Last ball in each cell
-    
-    // Mesh collision data
-    DeviceBuffer<int> meshFirstTriangle; // Starting triangle index per mesh
-    DeviceBuffer<Vec3> meshVertices;      // Concatenated vertices from all scene meshes
-    DeviceBuffer<int> meshTriIds;         // Triangle indices (groups of 3)
-    int numMeshTriangles = 0;             // Total number of triangles
-    
-    // Triangle BVH
-    DeviceBuffer<Vec4> meshTriBoundsLower; // Lower bounds for each triangle
-    DeviceBuffer<Vec4> meshTriBoundsUpper; // Upper bounds for each triangle
-    DeviceBuffer<Vec4> meshBoundsLower;   // Overall mesh bounds
-    DeviceBuffer<Vec4> meshBoundsUpper;   // Overall mesh bounds
-    BVH meshesBvh;                        // BVH structure for entire meshes
-    BVH trianglesBvh;                      // Separate BVH for triangles
-    
+        
     // Collision correction buffers (for symmetric resolution)
     DeviceBuffer<Vec3> posCorr;       // Position corrections
     DeviceBuffer<Vec4> newAngVel;     // New angular velocity accumulation (x,y,z = sum, w = count)
 
-    DeviceBuffer<float> rayCastMinT; // Minimum t values for ray casting
     // VBO data (mapped from OpenGL)
-    float* vboData = nullptr;      // Interleaved: pos(3), radius(1), color(3), quat(4), pad(3) = 14 floats    
+    float* vboData = nullptr;      // Interleaved: pos(3), radius(1), color(3), quat(4), pad(3) = 14 floats
+
+    DeviceBuffer<float> raycastHit;
 };
 
 // Factory functions for BallsDeviceData
@@ -137,7 +107,7 @@ __global__ void kernel_integrate(BallsDeviceData data, float dt, Vec3 gravity, f
     if (idx >= data.numBalls) return;
     
     // Read from VBO
-    float* ballData = data.vboData + idx * 14;
+    float* ballData = data.vboData + idx * VBO_STRIDE;
     Vec3 pos(ballData[0], ballData[1], ballData[2]);
     
     // Store previous position
@@ -164,38 +134,6 @@ __global__ void kernel_integrate(BallsDeviceData data, float dt, Vec3 gravity, f
     ballData[2] = pos.z;
 }
 
-// Compute bounds for each triangle for mesh BVH construction
-__global__ void kernel_computeTriangleBounds(BallsDeviceData data) {
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (idx >= data.numMeshTriangles) return;
-    
-    // Get the three vertex indices for this triangle
-    int i0 = data.meshTriIds[idx * 3 + 0];
-    int i1 = data.meshTriIds[idx * 3 + 1];
-    int i2 = data.meshTriIds[idx * 3 + 2];
-    
-    // Get the three vertices
-    Vec3 v0 = data.meshVertices[i0];
-    Vec3 v1 = data.meshVertices[i1];
-    Vec3 v2 = data.meshVertices[i2];
-    
-    // Compute bounds
-    Vec3 lower(
-        fminf(fminf(v0.x, v1.x), v2.x),
-        fminf(fminf(v0.y, v1.y), v2.y),
-        fminf(fminf(v0.z, v1.z), v2.z)
-    );
-    
-    Vec3 upper(
-        fmaxf(fmaxf(v0.x, v1.x), v2.x),
-        fmaxf(fmaxf(v0.y, v1.y), v2.y),
-        fmaxf(fmaxf(v0.z, v1.z), v2.z)
-    );
-    
-    // Store as Vec4 (BVH builder expects Vec4)
-    data.meshTriBoundsLower[idx] = Vec4(lower.x, lower.y, lower.z, 0.0f);
-    data.meshTriBoundsUpper[idx] = Vec4(upper.x, upper.y, upper.z, 0.0f);
-}
 
 // Fill hash values
 __global__ void kernel_fillHash(BallsDeviceData data) {
@@ -203,7 +141,7 @@ __global__ void kernel_fillHash(BallsDeviceData data) {
     if (idx >= data.numBalls) return;
     
     // Read position from VBO
-    float* ballData = data.vboData + idx * 14;
+    float* ballData = data.vboData + idx * VBO_STRIDE;
     Vec3 pos(ballData[0], ballData[1], ballData[2]);
     
     // Compute hash
@@ -302,7 +240,7 @@ __global__ void kernel_ballCollision(BallsDeviceData data, float bounce) {
     if (idx >= data.numBalls) return;
     
     // Get ball data (read from VBO)
-    float* ballData = data.vboData + idx * 14;
+    float* ballData = data.vboData + idx * VBO_STRIDE;
     Vec3 pos(ballData[0], ballData[1], ballData[2]);
     float radius = ballData[3];
     
@@ -329,7 +267,7 @@ __global__ void kernel_ballCollision(BallsDeviceData data, float bounce) {
                     int otherIdx = data.hashIds[i];
                     
                     // Get other ball data (read from VBO using index)
-                    float* otherData = data.vboData + otherIdx * 14;
+                    float* otherData = data.vboData + otherIdx * VBO_STRIDE;
                     Vec3 otherPos(otherData[0], otherData[1], otherData[2]);
                     float otherRadius = otherData[3];
                     
@@ -378,7 +316,7 @@ __global__ void kernel_wallCollision(BallsDeviceData data, Bounds3 sceneBounds, 
         Plane(Vec3(0, 0, 1),   sceneBounds.minimum.z)    // -Z wall (normal points back)
     };
     
-    float* ballData = data.vboData + idx * 14;
+    float* ballData = data.vboData + idx * VBO_STRIDE;
     Vec3 pos(ballData[0], ballData[1], ballData[2]);
     Vec3 angVel = data.angVel[idx];
     
@@ -401,10 +339,10 @@ __global__ void kernel_wallCollision(BallsDeviceData data, Bounds3 sceneBounds, 
 
 // BVH-based ball collision (alternative to hash grid)
 // Ball-mesh collision using BVH
-__device__ void kernel_ballMeshCollision(BallsDeviceData data, int ballIdx, int meshIdx, float searchRadius, float restitution, float dt) {
+__device__ void kernel_ballMeshCollision(BallsDeviceData& data, const MeshesDeviceData& meshData, int ballIdx, int meshIdx, float searchRadius, float restitution, float dt) {
 
     // Get ball data (read from VBO)
-    float* ballData = data.vboData + ballIdx * 14;
+    float* ballData = data.vboData + ballIdx * VBO_STRIDE;
     Vec3 ballPos(ballData[0], ballData[1], ballData[2]);
     float radius = ballData[3];
     
@@ -413,7 +351,7 @@ __device__ void kernel_ballMeshCollision(BallsDeviceData data, int ballIdx, int 
                        ballPos + Vec3(searchRadius, searchRadius, searchRadius));
     
     // Get root node of triangle BVH
-    int rootNode = data.trianglesBvh.mRootNodes[meshIdx];
+    int rootNode = meshData.trianglesBvh.mRootNodes[meshIdx];
     if (rootNode < 0) 
         return;
         
@@ -426,8 +364,8 @@ __device__ void kernel_ballMeshCollision(BallsDeviceData data, int ballIdx, int 
         int nodeIndex = stack[--stackCount];
 
         // Get node bounds
-        PackedNodeHalf lower = data.trianglesBvh.mNodeLowers[nodeIndex];
-        PackedNodeHalf upper = data.trianglesBvh.mNodeUppers[nodeIndex];
+        PackedNodeHalf lower = meshData.trianglesBvh.mNodeLowers[nodeIndex];
+        PackedNodeHalf upper = meshData.trianglesBvh.mNodeUppers[nodeIndex];
 
         Bounds3 nodeBounds(Vec3(lower.x, lower.y, lower.z),
             Vec3(upper.x, upper.y, upper.z));
@@ -441,14 +379,14 @@ __device__ void kernel_ballMeshCollision(BallsDeviceData data, int ballIdx, int 
                 int triIdx = leftIndex;
 
                 // Get the three vertex indices for this triangle
-                int i0 = data.meshTriIds[triIdx * 3 + 0];
-                int i1 = data.meshTriIds[triIdx * 3 + 1];
-                int i2 = data.meshTriIds[triIdx * 3 + 2];
+                int i0 = meshData.triIds.buffer[triIdx * 3 + 0];
+                int i1 = meshData.triIds.buffer[triIdx * 3 + 1];
+                int i2 = meshData.triIds.buffer[triIdx * 3 + 2];
 
                 // Get the three vertices
-                Vec3 v0 = data.meshVertices[i0];
-                Vec3 v1 = data.meshVertices[i1];
-                Vec3 v2 = data.meshVertices[i2];
+                Vec3 v0 = meshData.vertices.buffer[i0];
+                Vec3 v1 = meshData.vertices.buffer[i1];
+                Vec3 v2 = meshData.vertices.buffer[i2];
 
                 // Compute closest point on triangle to ball center
                 Vec3 baryCoords = getClosestPointOnTriangle(ballPos, v0, v1, v2);
@@ -473,16 +411,16 @@ __device__ void kernel_ballMeshCollision(BallsDeviceData data, int ballIdx, int 
 }
 
 // Ball-meshes collision using BVH
-__global__ void kernel_ballMeshesCollision(BallsDeviceData data, float searchRadius, float restitution, float dt)
+__global__ void kernel_ballMeshesCollision(BallsDeviceData data, const MeshesDeviceData meshData, float searchRadius, float restitution, float dt)
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
     
     // Check if we have mesh data
-    if (data.numMeshTriangles == 0) return;
+    if (meshData.numMeshTriangles == 0) return;
     
     // Get ball data (read from VBO)
-    float* ballData = data.vboData + idx * 14;
+    float* ballData = data.vboData + idx * VBO_STRIDE;
     Vec3 ballPos(ballData[0], ballData[1], ballData[2]);
     
     // Query bounds (ball position + search radius)
@@ -490,7 +428,7 @@ __global__ void kernel_ballMeshesCollision(BallsDeviceData data, float searchRad
                        ballPos + Vec3(searchRadius, searchRadius, searchRadius));
     
     // Get root node of meshes BVH
-    int rootNode = data.meshesBvh.mRootNodes[0];
+    int rootNode = meshData.meshesBvh.mRootNodes[0];
     if (rootNode < 0) return;
         
     // Stack-based BVH traversal
@@ -502,8 +440,8 @@ __global__ void kernel_ballMeshesCollision(BallsDeviceData data, float searchRad
         int nodeIndex = stack[--stackCount];
 
         // Get node bounds
-        PackedNodeHalf lower = data.meshesBvh.mNodeLowers[nodeIndex];
-        PackedNodeHalf upper = data.meshesBvh.mNodeUppers[nodeIndex];
+        PackedNodeHalf lower = meshData.meshesBvh.mNodeLowers[nodeIndex];
+        PackedNodeHalf upper = meshData.meshesBvh.mNodeUppers[nodeIndex];
 
         Bounds3 nodeBounds(Vec3(lower.x, lower.y, lower.z),
             Vec3(upper.x, upper.y, upper.z));
@@ -515,7 +453,7 @@ __global__ void kernel_ballMeshesCollision(BallsDeviceData data, float searchRad
 
             if (lower.b) {  // Leaf node - contains a mesh
                 int meshIdx = leftIndex;
-                kernel_ballMeshCollision(data, idx, meshIdx, searchRadius, restitution, dt);
+                kernel_ballMeshCollision(data, meshData, idx, meshIdx, searchRadius, restitution, dt);
             }
 
             else {  // Internal node
@@ -535,7 +473,7 @@ __global__ void kernel_applyCorrections(BallsDeviceData data, float relaxation) 
     if (idx >= data.numBalls) return;
     
     // Read from VBO
-    float* ballData = data.vboData + idx * 14;
+    float* ballData = data.vboData + idx * VBO_STRIDE;
     Vec3 pos(ballData[0], ballData[1], ballData[2]);
     
     // Apply position corrections with relaxation factor
@@ -563,7 +501,7 @@ __global__ void kernel_deriveVelocity(BallsDeviceData data, float dt) {
     if (idx >= data.numBalls) return;
     
     // Read current position from VBO
-    float* ballData = data.vboData + idx * 14;
+    float* ballData = data.vboData + idx * VBO_STRIDE;
     Vec3 pos(ballData[0], ballData[1], ballData[2]);
     
     // Derive velocity: v = (pos - prevPos) / dt
@@ -575,7 +513,7 @@ __global__ void kernel_integrateQuaternions(BallsDeviceData data, float dt) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
     
-    float* ballData = data.vboData + idx * 14;
+    float* ballData = data.vboData + idx * VBO_STRIDE;
     
     // Read quaternion
     Quat quat(ballData[7], ballData[8], ballData[9], ballData[10]); // x, y, z, w
@@ -608,7 +546,7 @@ __global__ void kernel_initBalls(BallsDeviceData data, Bounds3 ballsBounds, floa
     // Simple LCG for random numbers
     #define FRAND() (hash = hash * 1664525u + 1013904223u, float(hash) / float(0xFFFFFFFFu))
     
-    float* ballData = data.vboData + idx * 14;
+    float* ballData = data.vboData + idx * VBO_STRIDE;
     
     // Grid-based position within ballsBounds
     int layer = idx / ballsPerLayer;
@@ -688,135 +626,22 @@ __global__ void kernel_initBalls(BallsDeviceData data, Bounds3 ballsBounds, floa
 
 //-----------------------------------------------------------------------------
 
-
-// Ball-mesh collision using BVH
-__device__ bool kernel_raycastMesh(BallsDeviceData data, int meshIdx, Ray ray, float& minT) {
-
-    int rootNode = data.trianglesBvh.mRootNodes[meshIdx];
-    if (rootNode < 0)
-        return false;
-        
-    int stack[64];
-    stack[0] = rootNode;
-    int stackCount = 1;
-    bool hit = false;
-
-    while (stackCount > 0) {
-        int nodeIndex = stack[--stackCount];
-
-        // Get node bounds
-        PackedNodeHalf lower = data.trianglesBvh.mNodeLowers[nodeIndex];
-        PackedNodeHalf upper = data.trianglesBvh.mNodeUppers[nodeIndex];
-
-        Bounds3 nodeBounds(Vec3(lower.x, lower.y, lower.z),
-            Vec3(upper.x, upper.y, upper.z));
-        
-        if (rayBoundsIntersection(nodeBounds, ray))
-        {
-            const int leftIndex = lower.i;
-            const int rightIndex = upper.i;
-
-            if (lower.b) {  // Leaf node - contains a triangle
-                int triIdx = leftIndex;
-
-                // Get the three vertex indices for this triangle
-                int i0 = data.meshTriIds[triIdx * 3 + 0];
-                int i1 = data.meshTriIds[triIdx * 3 + 1];
-                int i2 = data.meshTriIds[triIdx * 3 + 2];
-
-                // Get the three vertices
-                Vec3 v0 = data.meshVertices[i0];
-                Vec3 v1 = data.meshVertices[i1];
-                Vec3 v2 = data.meshVertices[i2];
-
-                float t, u, v;
-
-                if (rayTriangleIntersection(ray, v0, v1, v2, t, u, v))
-                {
-                    hit = true;
-                    if (t > 0.0f && t < minT)
-                    {
-                        minT = t;
-                    }
-                }
-            }
-            else {  // Internal node
-             // Push children onto stack
-                if (stackCount < 63) {  // Prevent stack overflow
-                    stack[stackCount++] = leftIndex;
-                    stack[stackCount++] = rightIndex; 
-                }
-            }
-        }
-    }
-    return hit;
-}
-
-
-__global__ void kernel_raycast(BallsDeviceData data, bool useBalls, Ray ray)
-{
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (idx >= data.numBalls) 
-        return;
-
-    if (useBalls) // origin is ball position
-    {
-        float* ballData = data.vboData + idx * 14;
-        Vec3 pos(ballData[0], ballData[1], ballData[2]);
-        ray.orig = pos;
-    }
-
-    float minT = MaxFloat;
-    int stack[64];
-    stack[0] = data.meshesBvh.mRootNodes[0];
-    int count = 1;
-
-    while (count)
-    {
-        const int nodeIndex = stack[--count];
-
-        PackedNodeHalf lower = data.meshesBvh.mNodeLowers[nodeIndex];
-        PackedNodeHalf upper = data.meshesBvh.mNodeUppers[nodeIndex];
-
-        Bounds3 bounds(Vec3(lower.x, lower.y, lower.z), Vec3(upper.x, upper.y, upper.z));
-
-        if (rayBoundsIntersection(bounds, ray))
-        {
-           const int leftIndex = lower.i;
-           const int rightIndex = upper.i;
-
-           if (lower.b)
-           {
-               kernel_raycastMesh(data, leftIndex, ray, minT);
-           }
-           else
-           {
-               stack[count++] = leftIndex;
-               stack[count++] = rightIndex;
-           }
-        }
-    }
-
-    if (useBalls)
-    {
-        // fade shadow depth based on hit
-        float& shadowValue = data.vboData[idx * 14 + 11];
-        if (minT < MaxFloat)
-        {
-            shadowValue = Min(1.0f, shadowValue + 0.1f);
-        }
-        else
-        {
-            shadowValue = Max(0.0f, shadowValue - 0.1f);
-        }        
-    }
-    else
-    {
-        data.rayCastMinT[0] = minT;
-    }
-}
-
 // Host functions callable from BallsDemo.cpp
+
+bool BallsDemo::cudaRaycast(const Ray& ray, float& minT)
+{
+    minT = MaxFloat;
+
+    if (!meshes)
+        return false;
+
+    deviceData->raycastHit.resize(1);
+
+    return meshes->rayCast(1, nullptr, ray, deviceData->raycastHit.buffer, 1);
+    deviceData->raycastHit.getDeviceObject(minT, 0);
+    return minT < MaxFloat;
+}
+
 
 void BallsDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, Scene* scene) {
     // Ensure any previous CUDA operations are complete
@@ -828,12 +653,13 @@ void BallsDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
 
     if (!deviceData) 
         deviceData = std::make_shared<BallsDeviceData>();
-    if (!bvhBuilder) 
-        bvhBuilder = std::make_shared<BVHBuilder>();
+    if (!meshes) 
+        meshes = std::make_shared<CudaMeshes>();
+
+    meshes->initialize(scene);
     
     deviceData->numBalls = demoDesc.numBalls;
     deviceData->worldOrig = -100.0f;
-    this->bvhBuilder = bvhBuilder;
     
     // Use provided maximum radius
     deviceData->maxRadius = demoDesc.maxRadius;
@@ -907,113 +733,6 @@ void BallsDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
     
     cudaGraphicsUnmapResources(1, vboResource, 0);
     
-    // Load mesh data from scene
-    if (scene && scene->getMeshCount() > 0) {
-        printf("Loading mesh data for collision detection...\n");
-        
-        // Count total vertices and triangles
-        int totalVertices = 0;
-        int totalTriangles = 0;
-
-        std::vector<int> meshFirstTriangle;
-        
-        for (size_t i = 0; i < scene->getMeshCount(); i++) {
-            meshFirstTriangle.push_back((int)totalTriangles);
-            const Mesh* mesh = scene->getMeshes()[i];
-            const MeshData& data = mesh->getData();
-            totalVertices += (int)(data.positions.size() / 3);
-            totalTriangles += (int)(data.indices.size() / 3);
-        }
-        
-        printf("  Total vertices: %d, Total triangles: %d\n", totalVertices, totalTriangles);
-        
-        if (totalTriangles > 0) {
-            // Allocate host buffers
-            std::vector<Vec4> meshBoundsLower(scene->getMeshCount());
-            std::vector<Vec4> meshBoundsUpper(scene->getMeshCount());
-            std::vector<Vec3> hostVertices(totalVertices);
-            std::vector<int> hostTriIds(totalTriangles * 3);
-            
-            // Concatenate mesh data
-            int vertexOffset = 0;
-            int triangleOffset = 0;
-            
-            for (size_t i = 0; i < scene->getMeshCount(); i++) {
-                const Mesh* mesh = scene->getMeshes()[i];
-                const MeshData& data = mesh->getData();
-                Bounds3 meshBounds(Empty);
-                
-                // Copy vertices
-                int numVerts = (int)(data.positions.size() / 3);
-                for (int v = 0; v < numVerts; v++) {
-                    Vec3 pos(
-                        data.positions[v * 3 + 0],
-                        data.positions[v * 3 + 1],
-                        data.positions[v * 3 + 2]
-                    );
-                    meshBounds.include(pos);
-                    hostVertices[vertexOffset + v] = pos;
-                }
-                meshBoundsLower[i] = Vec4(meshBounds.minimum, 0.0f);
-                meshBoundsUpper[i] = Vec4(meshBounds.maximum, 0.0f);
-                
-                // Copy triangle indices (offset by current vertex offset)
-                int numTris = (int)(data.indices.size() / 3);
-                for (int t = 0; t < numTris; t++) {
-                    hostTriIds[(triangleOffset + t) * 3 + 0] = data.indices[t * 3 + 0] + vertexOffset;
-                    hostTriIds[(triangleOffset + t) * 3 + 1] = data.indices[t * 3 + 1] + vertexOffset;
-                    hostTriIds[(triangleOffset + t) * 3 + 2] = data.indices[t * 3 + 2] + vertexOffset;
-                }
-                
-                vertexOffset += numVerts;
-                triangleOffset += numTris;
-            }
-            
-            // Upload to GPU using DeviceBuffer::set (combines resize + memcpy)
-            deviceData->numMeshes = (int)scene->getMeshCount();
-            deviceData->meshFirstTriangle.set(meshFirstTriangle);
-            deviceData->meshVertices.set(hostVertices);
-            deviceData->meshTriIds.set(hostTriIds);
-            deviceData->numMeshTriangles = totalTriangles;
-
-            deviceData->meshBoundsLower.set(meshBoundsLower);
-            deviceData->meshBoundsUpper.set(meshBoundsUpper);
-            
-            // Allocate triangle bounds buffers
-            deviceData->meshTriBoundsLower.resize(totalTriangles, false);
-            deviceData->meshTriBoundsUpper.resize(totalTriangles, false);
-            
-            // Compute triangle bounds
-            int numTriBlocks = (totalTriangles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-            kernel_computeTriangleBounds<<<numTriBlocks, THREADS_PER_BLOCK>>>(*deviceData);
-            cudaDeviceSynchronize();
-
-            // Build BVH for meshes
-            if (bvhBuilder) {
-                printf("Building BVH for %d meshes...\n", deviceData->numMeshes);
-                bvhBuilder->build(deviceData->meshesBvh,
-                    deviceData->meshBoundsLower.buffer,
-                    deviceData->meshBoundsUpper.buffer,
-                    deviceData->numMeshes,
-                    nullptr, 0); // No grouping
-                printf("Mesh BVH built: %d nodes\n", deviceData->meshesBvh.mNumNodes);
-            }
-            
-            // Build BVH for triangles
-            if (bvhBuilder) {
-                printf("Building BVH for %d triangles...\n", totalTriangles);
-                bvhBuilder->build(deviceData->trianglesBvh,
-                    deviceData->meshTriBoundsLower.buffer,
-                    deviceData->meshTriBoundsUpper.buffer,
-                    totalTriangles,
-                    deviceData->meshFirstTriangle.buffer,
-                    deviceData->numMeshes);
-                printf("Triangle BVH built: %d nodes\n", deviceData->trianglesBvh.mNumNodes);
-            }
-            
-            printf("Mesh collision data loaded successfully!\n");
-        }
-    }
     
     // Check for errors
     err = cudaGetLastError();
@@ -1057,6 +776,8 @@ void BallsDemo::updateCudaPhysics(float dt,
 
     float sdt = dt / (float)numSubSteps;
 
+    auto meshesData = meshes->getDeviceData();
+
     for (int subStep = 0; subStep < numSubSteps; subStep++)
     {
 
@@ -1077,9 +798,9 @@ void BallsDemo::updateCudaPhysics(float dt,
         kernel_wallCollision << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, demoDesc.sceneBounds, demoDesc.bounce, sdt, subStep == 0);
 
         // Ball-mesh collision
-        if (deviceData->numMeshTriangles > 0) {
+        if (meshesData->numMeshTriangles > 0) {
             float meshSearchRadius = 1.0f * deviceData->maxRadius;  // Search radius for mesh collisions
-            kernel_ballMeshesCollision << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, meshSearchRadius, demoDesc.bounce, sdt);
+            kernel_ballMeshesCollision << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, *meshesData, meshSearchRadius, demoDesc.bounce, sdt);
         }
 
         // Derive velocity from position change (PBD)
@@ -1089,8 +810,12 @@ void BallsDemo::updateCudaPhysics(float dt,
     }
 
     // compute ball shadow depths (writes directly to VBO at offset 11)
-    Ray sunRay(Vec3(Zero), demoDesc.sunDirection);
-    kernel_raycast<<<deviceData->numBalls / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK>>>(*deviceData, true, sunRay);
+
+    if (meshes)
+    {
+        Ray sunRay(Vec3(Zero), demoDesc.sunDirection);
+        meshes->rayCast(deviceData->numBalls, deviceData->vboData, sunRay, deviceData->vboData + 11, VBO_STRIDE);
+    }
 
     // Ensure all CUDA operations complete before unmapping VBO
     cudaDeviceSynchronize();
@@ -1123,8 +848,8 @@ void BallsDemo::cleanupCudaPhysics(cudaGraphicsResource* vboResource) {
         deviceData->free();
         deviceData.reset();
     }
-    if (bvhBuilder) {
-        bvhBuilder.reset();
+    if (meshes) {
+        meshes->cleanup();
     }
     
     // Unregister VBO
@@ -1134,20 +859,6 @@ void BallsDemo::cleanupCudaPhysics(cudaGraphicsResource* vboResource) {
     
     // Final sync to ensure cleanup completes
     cudaDeviceSynchronize();
-}
-
-bool BallsDemo::cudaRaycast(const Ray& ray, float& minT)
-{
-    // Upload ray to device
-    if (deviceData->numMeshTriangles == 0)
-        return false;
-
-    deviceData->rayCastMinT.resize(1, false);
-
-    kernel_raycast<<<1 / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK>>>(*deviceData, false, ray);
-    deviceData->rayCastMinT.getDeviceObject(minT, 0);
-
-    return (minT < MaxFloat);
 }
 
 void BallsDemo::exportBallsToFile(const std::string& filename)

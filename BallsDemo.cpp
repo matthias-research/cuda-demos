@@ -232,7 +232,6 @@ static GLuint compileShader(GLenum type, const char* source) {
 BallsDemo::BallsDemo(const BallsDemoDescriptor& desc) : vao(0), vbo(0), ballShader(0), ballShadowShader(0), 
                          shadowFBO(0), shadowTexture(0), shadowWidth(0), shadowHeight(0) {
     demoDesc = desc;
-        bvhBuilder = std::make_shared<BVHBuilder>();
     
     // Initialize mesh renderer
     renderer = new Renderer();

@@ -163,7 +163,7 @@ struct BallsDemoDescriptor
 
 
 struct BallsDeviceData;
-class BVHBuilder;
+class CudaMeshes;
 
 class BallsDemo : public Demo {
 private:
@@ -188,7 +188,7 @@ private:
     // Camera (reference to main camera)
     Camera* camera = nullptr;
     std::shared_ptr<BallsDeviceData> deviceData = nullptr;
-    std::shared_ptr<BVHBuilder> bvhBuilder = nullptr;
+    std::shared_ptr<CudaMeshes> meshes = nullptr;
 
     // Lighting
 
