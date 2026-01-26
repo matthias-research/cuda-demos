@@ -19,6 +19,7 @@ struct FluidDeviceData {
     void free()  // no destructor because cuda would call it in the kernels
     {
         numParticles = 0;
+        numMeshes = 0;
         numMeshTriangles = 0;
 
         vel.free();
@@ -45,6 +46,7 @@ struct FluidDeviceData {
     }
         
     int numParticles = 0;
+    int numMeshes = 0;
     float particleRadius = 0.2f;
     float kernelRadius = 0.4f;
     float gridSpacing = 0.4f;

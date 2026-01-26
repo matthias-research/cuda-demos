@@ -100,6 +100,7 @@
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+      <ClInclude Include="CudaMeshes.h" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Camera.cpp" />
     <ClCompile Include="MandelbrotDemo.cpp" />
@@ -132,6 +133,7 @@
     <CudaCompile Include="MandelbrotDemo.cu" />
     <CudaCompile Include="BallsDemo.cu" />
     <CudaCompile Include="FluidDemo.cu" />
+    <CudaCompile Include="CudaMeshes.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

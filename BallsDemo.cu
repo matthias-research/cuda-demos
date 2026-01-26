@@ -19,6 +19,10 @@ static const int HASH_SIZE = 37000111;  // Prime number for better distribution
 struct BallsDeviceData {
     void free()  // no destructor because cuda would call it in the kernels
     {
+        numBalls = 0;
+        numMeshes = 0;
+        numMeshTriangles = 0;
+
         vel.free();
         prevPos.free();
         angVel.free();
@@ -36,8 +40,6 @@ struct BallsDeviceData {
         meshBoundsUpper.free();
         meshTriBoundsLower.free();
         meshTriBoundsUpper.free();
-        numBalls = 0;
-        numMeshTriangles = 0;
         meshesBvh.free();
         trianglesBvh.free();
         rayCastMinT.free();
@@ -1116,8 +1118,6 @@ void BallsDemo::cleanupCudaPhysics(cudaGraphicsResource* vboResource) {
     
     // Free all device memory using DeviceBuffer::free()
     if (deviceData) {
-        deviceData->numBalls = 0;
-        deviceData->numMeshTriangles = 0;
 
         deviceData->vboData = nullptr;
         deviceData->free();
