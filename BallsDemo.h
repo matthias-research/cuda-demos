@@ -174,12 +174,8 @@ private:
     std::string customName = "3D Bouncing Balls";
     int lastInitializedBallCount = -1;
     
-    // Point rendering (owns VBO)
+    // Point rendering (owns VBO and shadow FBO)
     PointRenderer* pointRenderer = nullptr;
-    GLuint shadowFBO = 0;
-    GLuint shadowTexture = 0;
-    int shadowWidth = 0;
-    int shadowHeight = 0;
     
     // CUDA resources
     cudaGraphicsResource* cudaVboResource = nullptr;
@@ -197,7 +193,7 @@ private:
 
     // Lighting
     Vec3 lightDir = Vec3(0.1f, 0.1f, 0.5f).normalized();
-    bool useShadows = false;
+    bool useShadows = true;
     bool useTextureMode = false;
     GLuint ballTexture = 0;
 
@@ -212,8 +208,6 @@ private:
     bool showSkybox = true;
     
     void initBalls();
-    void initShadowBuffer(int width, int height);
-    void renderShadows(int width, int height);
 
 public:
     BallsDemo(const BallsDemoDescriptor& desc);

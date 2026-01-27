@@ -331,6 +331,70 @@ void PointRenderer::resize(int newMaxPoints) {
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
+void PointRenderer::initShadowBuffer(int width, int height) {
+    if (shadowFBO != 0 && shadowWidth == width && shadowHeight == height) {
+        return;
+    }
+    
+    if (shadowFBO != 0) {
+        glDeleteFramebuffers(1, &shadowFBO);
+        glDeleteTextures(1, &shadowTexture);
+        glDeleteRenderbuffers(1, &shadowRBO);
+    }
+    
+    shadowWidth = width;
+    shadowHeight = height;
+    
+    glGenFramebuffers(1, &shadowFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO);
+    
+    glGenTextures(1, &shadowTexture);
+    glBindTexture(GL_TEXTURE_2D, shadowTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, shadowTexture, 0);
+    
+    glGenRenderbuffers(1, &shadowRBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, shadowRBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, width, height);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, shadowRBO);
+    
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void PointRenderer::getLightMatrix(float* outMatrix, const Vec3& lightDir, const Bounds3& sceneBounds) const {
+    Vec3 lightDirection = lightDir.normalized();
+    float roomDiag = (sceneBounds.maximum - sceneBounds.minimum).magnitude();
+    Vec3 lightPos = -lightDirection * (roomDiag * 2.0f);
+    Vec3 target(0.0f, 0.0f, 0.0f);
+    
+    Vec3 forward = (target - lightPos).normalized();
+    Vec3 right = Vec3(0, 1, 0).cross(forward).normalized();
+    Vec3 up = forward.cross(right);
+    
+    float view[16];
+    view[0] = right.x;    view[4] = right.y;    view[8] = right.z;     view[12] = -right.dot(lightPos);
+    view[1] = up.x;       view[5] = up.y;       view[9] = up.z;        view[13] = -up.dot(lightPos);
+    view[2] = -forward.x; view[6] = -forward.y; view[10] = -forward.z; view[14] = forward.dot(lightPos);
+    view[3] = 0;          view[7] = 0;          view[11] = 0;          view[15] = 1;
+    
+    float halfSize = roomDiag * 0.6f;
+    float nearClip = 0.1f;
+    float farClip = roomDiag * 4.0f;
+    float projection[16];
+    RenderUtils::buildOrthographicMatrix(projection, halfSize, nearClip, farClip);
+    
+    for (int col = 0; col < 4; col++) {
+        for (int row = 0; row < 4; row++) {
+            outMatrix[col * 4 + row] = 0.0f;
+            for (int k = 0; k < 4; k++) {
+                outMatrix[col * 4 + row] += projection[k * 4 + row] * view[col * 4 + k];
+            }
+        }
+    }
+}
+
 void PointRenderer::render(Camera* camera, int count, Mode mode, GLuint texture,
                            const Vec3& lightDir, int viewportWidth, int viewportHeight) {
     if (!camera || count <= 0) return;
@@ -390,15 +454,31 @@ void PointRenderer::render(Camera* camera, int count, Mode mode, GLuint texture,
     glUseProgram(0);
 }
 
-void PointRenderer::renderShadowPass(const float* lightViewProj, int count, float pointScale) {
+void PointRenderer::renderShadowPass(int count, const Vec3& lightDir, const Bounds3& sceneBounds,
+                                     int viewportWidth, int viewportHeight) {
     if (count <= 0) return;
+    
+    initShadowBuffer(viewportWidth, viewportHeight);
+    
+    glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO);
+    glViewport(0, 0, viewportWidth, viewportHeight);
+    
+    glEnable(GL_DEPTH_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     
     glEnable(GL_PROGRAM_POINT_SIZE);
     glEnable(GL_POINT_SPRITE);
     
     glUseProgram(shaderShadow);
     
-    // For orthographic shadow maps, view and projection are combined in lightViewProj
+    float lightViewProj[16];
+    getLightMatrix(lightViewProj, lightDir, sceneBounds);
+    
+    float roomDiag = (sceneBounds.maximum - sceneBounds.minimum).magnitude();
+    float halfSize = roomDiag * 0.6f;
+    float pointScale = (1.0f / halfSize) * viewportHeight;
+    
     float identity[16];
     RenderUtils::setIdentity(identity);
     
@@ -411,6 +491,8 @@ void PointRenderer::renderShadowPass(const float* lightViewProj, int count, floa
     glBindVertexArray(0);
     
     glDisable(GL_POINT_SPRITE);
+    glDisable(GL_DEPTH_TEST);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glUseProgram(0);
 }
 
@@ -421,4 +503,7 @@ void PointRenderer::cleanup() {
     if (shaderTextured) { glDeleteProgram(shaderTextured); shaderTextured = 0; }
     if (shaderBall) { glDeleteProgram(shaderBall); shaderBall = 0; }
     if (shaderShadow) { glDeleteProgram(shaderShadow); shaderShadow = 0; }
+    if (shadowFBO) { glDeleteFramebuffers(1, &shadowFBO); shadowFBO = 0; }
+    if (shadowTexture) { glDeleteTextures(1, &shadowTexture); shadowTexture = 0; }
+    if (shadowRBO) { glDeleteRenderbuffers(1, &shadowRBO); shadowRBO = 0; }
 }

@@ -536,7 +536,7 @@ bool BallsDemo::cudaRaycast(const Ray& ray, float& minT)
 
     deviceData->raycastHit.resize(1);
 
-    return meshes->rayCast(1, nullptr, ray, deviceData->raycastHit.buffer, 1);
+    meshes->rayCast(1, nullptr, ray, deviceData->raycastHit.buffer, 1);
     deviceData->raycastHit.getDeviceObject(minT, 0);
     return minT < MaxFloat;
 }

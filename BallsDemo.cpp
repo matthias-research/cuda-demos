@@ -92,8 +92,6 @@ BallsDemo::~BallsDemo() {
         skybox->cleanup();
         delete skybox;
     }
-    if (shadowFBO) glDeleteFramebuffers(1, &shadowFBO);
-    if (shadowTexture) glDeleteTextures(1, &shadowTexture);
     if (ballTexture) glDeleteTextures(1, &ballTexture);
 }
 
@@ -104,98 +102,6 @@ void BallsDemo::initBalls() {
     }
 }
 
-
-void BallsDemo::initShadowBuffer(int width, int height) {
-    if (shadowFBO != 0 && shadowWidth == width && shadowHeight == height) {
-        return;
-    }
-    
-    if (shadowFBO != 0) {
-        glDeleteFramebuffers(1, &shadowFBO);
-        glDeleteTextures(1, &shadowTexture);
-    }
-    
-    shadowWidth = width;
-    shadowHeight = height;
-    
-    // Create FBO
-    glGenFramebuffers(1, &shadowFBO);
-    glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO);
-    
-    // Create color texture
-    glGenTextures(1, &shadowTexture);
-    glBindTexture(GL_TEXTURE_2D, shadowTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, shadowTexture, 0);
-    
-    // Create depth renderbuffer
-    GLuint rbo;
-    glGenRenderbuffers(1, &rbo);
-    glBindRenderbuffer(GL_RENDERBUFFER, rbo);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, width, height);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rbo);
-    
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        std::cerr << "Shadow framebuffer is not complete!" << std::endl;
-    }
-    
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
-
-void BallsDemo::renderShadows(int width, int height) {
-    if (!camera || !pointRenderer) return;
-    
-    initShadowBuffer(width, height);
-    
-    glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO);
-    glViewport(0, 0, width, height);
-    
-    glEnable(GL_DEPTH_TEST);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    
-    // Build light view-projection matrix
-    Vec3 lightDirection = lightDir.normalized();
-    float roomDiag = (demoDesc.sceneBounds.maximum - demoDesc.sceneBounds.minimum).magnitude();
-    Vec3 lightPos = -lightDirection * (roomDiag * 2.0f);
-    Vec3 target(0.0f, 0.0f, 0.0f);
-    
-    Vec3 forward = (target - lightPos).normalized();
-    Vec3 right = Vec3(0, 1, 0).cross(forward).normalized();
-    Vec3 up = forward.cross(right);
-    
-    float view[16];
-    view[0] = right.x;    view[4] = right.y;    view[8] = right.z;     view[12] = -right.dot(lightPos);
-    view[1] = up.x;       view[5] = up.y;       view[9] = up.z;        view[13] = -up.dot(lightPos);
-    view[2] = -forward.x; view[6] = -forward.y; view[10] = -forward.z; view[14] = forward.dot(lightPos);
-    view[3] = 0;          view[7] = 0;          view[11] = 0;          view[15] = 1;
-    
-    float halfSize = roomDiag * 0.6f;
-    float near = 0.1f;
-    float far = roomDiag * 4.0f;
-    
-    float projection[16];
-    RenderUtils::buildOrthographicMatrix(projection, halfSize, near, far);
-    
-    // Combine into light view-projection matrix
-    float lightViewProj[16];
-    for (int col = 0; col < 4; col++) {
-        for (int row = 0; row < 4; row++) {
-            lightViewProj[col * 4 + row] = 0.0f;
-            for (int k = 0; k < 4; k++) {
-                lightViewProj[col * 4 + row] += projection[k * 4 + row] * view[col * 4 + k];
-            }
-        }
-    }
-    
-    pointRenderer->renderShadowPass(lightViewProj, demoDesc.numBalls, projection[0] * height);
-    
-    glDisable(GL_DEPTH_TEST);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
 
 void BallsDemo::update(float deltaTime) {
     // Ensure scene is loaded on first use
@@ -400,6 +306,11 @@ void BallsDemo::render3D(int width, int height) {
     camera->nearClip = demoDesc.cameraNear;
     camera->farClip = demoDesc.cameraFar;
     
+    // Render shadow pass first (before main rendering)
+    if (useShadows) {
+        pointRenderer->renderShadowPass(demoDesc.numBalls, lightDir, demoDesc.sceneBounds, width, height);
+    }
+    
     glViewport(0, 0, width, height);
     glEnable(GL_DEPTH_TEST);
     glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
@@ -409,12 +320,12 @@ void BallsDemo::render3D(int width, int height) {
         skybox->render(camera);
     }
     
-    // Render balls using PointRenderer
-    PointRenderer::Mode mode = useTextureMode ? PointRenderer::Mode::Ball : PointRenderer::Mode::Ball;
+    // Render balls
+    PointRenderer::Mode mode = PointRenderer::Mode::Ball;
     pointRenderer->render(camera, demoDesc.numBalls, mode, 
                          useTextureMode ? ballTexture : 0, lightDir, width, height);
     
-    // Render static scene meshes
+    // Render static scene meshes with shadows from balls
     if (showScene && scene && meshRenderer) {
         Vec3 lightDirection = lightDir.normalized();
         meshRenderer->getLight().x = lightDirection.x;
@@ -425,37 +336,9 @@ void BallsDemo::render3D(int width, int height) {
         meshRenderer->setUseBakedLighting(demoDesc.useBakedLighting);
         
         Renderer::ShadowMap shadowMapData;
-        shadowMapData.texture = shadowTexture;
+        shadowMapData.texture = pointRenderer->getShadowTexture();
         shadowMapData.bias = 0.005f;
-        
-        // Build light space matrix for shadows
-        float roomDiag = (demoDesc.sceneBounds.maximum - demoDesc.sceneBounds.minimum).magnitude();
-        Vec3 lightPos = -lightDirection * (roomDiag * 2.0f);
-        Vec3 target(0.0f, 0.0f, 0.0f);
-        Vec3 forward = (target - lightPos).normalized();
-        Vec3 right = Vec3(0, 1, 0).cross(forward).normalized();
-        Vec3 up = forward.cross(right);
-        
-        float lightView[16];
-        lightView[0] = right.x;    lightView[4] = right.y;    lightView[8] = right.z;     lightView[12] = -right.dot(lightPos);
-        lightView[1] = up.x;       lightView[5] = up.y;       lightView[9] = up.z;        lightView[13] = -up.dot(lightPos);
-        lightView[2] = -forward.x; lightView[6] = -forward.y; lightView[10] = -forward.z; lightView[14] = forward.dot(lightPos);
-        lightView[3] = 0;          lightView[7] = 0;          lightView[11] = 0;          lightView[15] = 1;
-        
-        float halfSize = roomDiag * 0.6f;
-        float nearClip = 0.1f;
-        float farClip = roomDiag * 4.0f;
-        float lightProj[16];
-        RenderUtils::buildOrthographicMatrix(lightProj, halfSize, nearClip, farClip);
-        
-        for (int col = 0; col < 4; col++) {
-            for (int row = 0; row < 4; row++) {
-                shadowMapData.lightMatrix[col * 4 + row] = 0.0f;
-                for (int k = 0; k < 4; k++) {
-                    shadowMapData.lightMatrix[col * 4 + row] += lightProj[k * 4 + row] * lightView[col * 4 + k];
-                }
-            }
-        }
+        pointRenderer->getLightMatrix(shadowMapData.lightMatrix, lightDir, demoDesc.sceneBounds);
         
         for (const Mesh* mesh : scene->getMeshes()) {
             meshRenderer->renderMesh(*mesh, camera, width, height, 1.0f, nullptr, 0.0f, useShadows ? &shadowMapData : nullptr);
@@ -463,8 +346,4 @@ void BallsDemo::render3D(int width, int height) {
     }
     
     glDisable(GL_DEPTH_TEST);
-    
-    if (useShadows) {
-        renderShadows(width, height);
-    }
 }
