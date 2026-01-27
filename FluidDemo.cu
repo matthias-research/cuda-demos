@@ -1,313 +1,505 @@
 #include "FluidDemo.h"
 #include "CudaUtils.h"
+#include "CudaMeshes.h"
 #include "CudaHash.h"
+#include "BVH.h"
+#include "Scene.h"
+#include "Mesh.h"
+#include "Geometry.h"
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 #include <device_launch_parameters.h>
-#include <vector>
-#include "BVH.h"
-#include "Geometry.h"
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
-#include "CudaMeshes.h"
+#include <cstdio>
+#include <vector>
 
-
-static const int VBO_STRIDE = 6;    // pos(3), color(3)
+static const int VBO_STRIDE = 8;  // pos(3), color(3), lifetime(1), pad(1)
 
 // Device data structure - all simulation state on GPU
 struct FluidDeviceData {
-    void free()  // no destructor because cuda would call it in the kernels
-    {
+    void free() {
         numParticles = 0;
-
         vel.free();
         prevPos.free();
         posCorr.free();
         raycastHit.free();
     }
-        
+
     int numParticles = 0;
     float particleRadius = 0.2f;
-    float kernelRadius = 0.4f;
-    float gridSpacing = 0.4f;
+    float gridSpacing = 0.5f;
     float worldOrig = -100.0f;
-    
-    // Physics data
-    DeviceBuffer<Vec3> vel;           // Velocities
-    DeviceBuffer<Vec3> prevPos;       // Previous positions (for PBD)
-            
-    // Collision correction buffers (for symmetric resolution)
-    DeviceBuffer<Vec3> posCorr;       // Position corrections
-    float* vboData = nullptr;      // Interleaved: pos(3), color(3)
 
+    DeviceBuffer<Vec3> vel;
+    DeviceBuffer<Vec3> prevPos;
+    DeviceBuffer<Vec3> posCorr;
     DeviceBuffer<float> raycastHit;
+    
+    float* vboData = nullptr;
 };
 
-#include "FluidDemo.h"
 
-
-// Integrate - save previous position and predict new position (PBD)
-__global__ void kernel_integrate(FluidDeviceData data, float dt, Vec3 gravity) 
-{
+// Integrate velocities and positions
+__global__ void kernel_integrate(FluidDeviceData data, float dt, Vec3 gravity, float maxVelocity) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numParticles) return;
-    
-    // Read from VBO
+
     float* particleData = data.vboData + idx * VBO_STRIDE;
     Vec3 pos(particleData[0], particleData[1], particleData[2]);
-    
+
     data.prevPos[idx] = pos;
-    
+
     Vec3 vel = data.vel[idx];
     vel += gravity * dt;
-    data.vel[idx] = vel;
 
+    float v = vel.length();
+    if (v > maxVelocity)
+        vel *= maxVelocity / v;
+
+    data.vel[idx] = vel;
     pos += vel * dt;
-    
+
     particleData[0] = pos.x;
     particleData[1] = pos.y;
     particleData[2] = pos.z;
 }
 
-__device__ inline void separateHardParticles(
-    int idx,
-    int otherIdx,
-    const Vec3& pos,
-    const Vec3& otherPos,
+
+// Handle particle-particle collision - just push apart
+__device__ inline void handleParticleCollision(
+    int idx, int otherIdx,
+    const Vec3& pos, const Vec3& otherPos,
+    float radius,
     FluidDeviceData& data)
 {
     if (idx >= otherIdx) return;
-    
+
     Vec3 delta = otherPos - pos;
     float dist = delta.magnitude();
-    float minDist = data.particleRadius * 2.0f;
-    
+    float minDist = radius * 2.0f;
+
     if (dist < minDist && dist > 0.001f) {
         Vec3 normal = delta / dist;
-        
         float overlap = minDist - dist;
         Vec3 separation = normal * (overlap * 0.5f);
-        
+
         atomicAdd(&data.posCorr[idx].x, -separation.x);
         atomicAdd(&data.posCorr[idx].y, -separation.y);
         atomicAdd(&data.posCorr[idx].z, -separation.z);
-        
+
         atomicAdd(&data.posCorr[otherIdx].x, separation.x);
         atomicAdd(&data.posCorr[otherIdx].y, separation.y);
         atomicAdd(&data.posCorr[otherIdx].z, separation.z);
     }
 }
 
-__global__ void kernel_separateHardParticles(FluidDeviceData data, HashDeviceData hashData, float bounce)
-{
+
+// Particle collision using spatial hash
+__global__ void kernel_particleCollision_hash(FluidDeviceData data, HashDeviceData hashData) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (idx >= data.numParticles) 
-        return;
+    if (idx >= data.numParticles) return;
 
     float* particleData = data.vboData + idx * VBO_STRIDE;
     Vec3 pos(particleData[0], particleData[1], particleData[2]);
+    float radius = data.particleRadius;
 
-    int firstNeighbor = hashData.firstNeighbor[idx];
-    int numNeighbors = hashData.firstNeighbor[idx + 1] - firstNeighbor;
+    int xi = floorf((pos.x - data.worldOrig) / data.gridSpacing);
+    int yi = floorf((pos.y - data.worldOrig) / data.gridSpacing);
+    int zi = floorf((pos.z - data.worldOrig) / data.gridSpacing);
 
-    for (int i = 0; i < numNeighbors; i++)
-    {
-        int otherIdx = hashData.neighbors[firstNeighbor + i];
-                    
-        float* otherData = data.vboData + otherIdx * VBO_STRIDE;
-        Vec3 otherPos(otherData[0], otherData[1], otherData[2]);
-                    
-        separateHardParticles(idx, otherIdx, pos, otherPos, data);
+    for (int dx = -1; dx <= 1; dx++) {
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                int cellX = xi + dx;
+                int cellY = yi + dy;
+                int cellZ = zi + dz;
+
+                unsigned int h = hashFunction(cellX, cellY, cellZ);
+                int first = hashData.hashCellFirst[h];
+                int last = hashData.hashCellLast[h];
+
+                for (int i = first; i < last; i++) {
+                    int otherIdx = hashData.hashIds[i];
+                    float* otherData = data.vboData + otherIdx * VBO_STRIDE;
+                    Vec3 otherPos(otherData[0], otherData[1], otherData[2]);
+
+                    handleParticleCollision(idx, otherIdx, pos, otherPos, radius, data);
+                }
+            }
+        }
     }
 }
 
-__global__ void kernel_wallCollision(FluidDeviceData data, Bounds3 sceneBounds) {
+
+// Wall collision - just push position outside
+__global__ void kernel_wallCollision(FluidDeviceData data, Bounds3 sceneBounds, float radius) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (idx >= data.numParticles) 
-        return;
-        
-    Plane walls[5] = {
-        Plane(Vec3(-1, 0, 0),  -sceneBounds.maximum.x),
-        Plane(Vec3(1, 0, 0),   sceneBounds.minimum.x),
-        Plane(Vec3(0, 1, 0),   sceneBounds.minimum.y),
-        Plane(Vec3(0, 0, -1),  -sceneBounds.maximum.z),
-        Plane(Vec3(0, 0, 1),   sceneBounds.minimum.z)
-    };
-    
+    if (idx >= data.numParticles) return;
+
     float* particleData = data.vboData + idx * VBO_STRIDE;
     Vec3 pos(particleData[0], particleData[1], particleData[2]);
 
-    float radius = data.particleRadius;
-    
-    for (int i = 0; i < 5; i++) {
-        const Plane& wall = walls[i];
+    // Push outside walls
+    if (pos.x - radius < sceneBounds.minimum.x) pos.x = sceneBounds.minimum.x + radius;
+    if (pos.x + radius > sceneBounds.maximum.x) pos.x = sceneBounds.maximum.x - radius;
+    if (pos.y - radius < sceneBounds.minimum.y) pos.y = sceneBounds.minimum.y + radius;
+    if (pos.z - radius < sceneBounds.minimum.z) pos.z = sceneBounds.minimum.z + radius;
+    if (pos.z + radius > sceneBounds.maximum.z) pos.z = sceneBounds.maximum.z - radius;
 
-        float signedDist = wall.n.dot(pos) - radius - wall.d;
-    
-        if (signedDist < 0) {
-            pos -= wall.n * signedDist;
-        }
-    }   
-    
     particleData[0] = pos.x;
     particleData[1] = pos.y;
     particleData[2] = pos.z;
 }
 
 
+// Particle-mesh collision - push particle away from closest triangle
+__device__ void kernel_particleMeshCollision(
+    FluidDeviceData& data,
+    const MeshesDeviceData& meshData,
+    int particleIdx, int meshIdx,
+    float searchRadius, float radius)
+{
+    float* particleData = data.vboData + particleIdx * VBO_STRIDE;
+    Vec3 pos(particleData[0], particleData[1], particleData[2]);
+
+    Bounds3 queryBounds(pos - Vec3(searchRadius, searchRadius, searchRadius),
+                        pos + Vec3(searchRadius, searchRadius, searchRadius));
+
+    int rootNode = meshData.trianglesBvh.mRootNodes[meshIdx];
+    if (rootNode < 0) return;
+
+    int stack[64];
+    stack[0] = rootNode;
+    int stackCount = 1;
+
+    while (stackCount > 0) {
+        int nodeIndex = stack[--stackCount];
+
+        PackedNodeHalf lower = meshData.trianglesBvh.mNodeLowers[nodeIndex];
+        PackedNodeHalf upper = meshData.trianglesBvh.mNodeUppers[nodeIndex];
+
+        Bounds3 nodeBounds(Vec3(lower.x, lower.y, lower.z), Vec3(upper.x, upper.y, upper.z));
+
+        if (nodeBounds.intersect(queryBounds)) {
+            const int leftIndex = lower.i;
+            const int rightIndex = upper.i;
+
+            if (lower.b) {  // Leaf node
+                int triIdx = leftIndex;
+
+                int i0 = meshData.triIds.buffer[triIdx * 3 + 0];
+                int i1 = meshData.triIds.buffer[triIdx * 3 + 1];
+                int i2 = meshData.triIds.buffer[triIdx * 3 + 2];
+
+                Vec3 v0 = meshData.vertices.buffer[i0];
+                Vec3 v1 = meshData.vertices.buffer[i1];
+                Vec3 v2 = meshData.vertices.buffer[i2];
+
+                Vec3 baryCoords = getClosestPointOnTriangle(pos, v0, v1, v2);
+                Vec3 closestPoint = v0 * baryCoords.x + v1 * baryCoords.y + v2 * baryCoords.z;
+
+                Vec3 toParticle = pos - closestPoint;
+                float dist = toParticle.magnitude();
+
+                if (dist < radius && dist > 0.001f) {
+                    Vec3 normal = toParticle / dist;
+                    pos = closestPoint + normal * radius;
+                }
+            }
+            else {  // Internal node
+                if (stackCount < 63) {
+                    stack[stackCount++] = leftIndex;
+                    stack[stackCount++] = rightIndex;
+                }
+            }
+        }
+    }
+
+    particleData[0] = pos.x;
+    particleData[1] = pos.y;
+    particleData[2] = pos.z;
+}
+
+
+// Traverse mesh BVH for particle-mesh collision
+__global__ void kernel_particleMeshesCollision(
+    FluidDeviceData data,
+    const MeshesDeviceData meshData,
+    float searchRadius, float radius)
+{
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx >= data.numParticles) return;
+    if (meshData.numMeshTriangles == 0) return;
+
+    float* particleData = data.vboData + idx * VBO_STRIDE;
+    Vec3 pos(particleData[0], particleData[1], particleData[2]);
+
+    Bounds3 queryBounds(pos - Vec3(searchRadius, searchRadius, searchRadius),
+                        pos + Vec3(searchRadius, searchRadius, searchRadius));
+
+    int rootNode = meshData.meshesBvh.mRootNodes[0];
+    if (rootNode < 0) return;
+
+    int stack[64];
+    stack[0] = rootNode;
+    int stackCount = 1;
+
+    while (stackCount > 0) {
+        int nodeIndex = stack[--stackCount];
+
+        PackedNodeHalf lower = meshData.meshesBvh.mNodeLowers[nodeIndex];
+        PackedNodeHalf upper = meshData.meshesBvh.mNodeUppers[nodeIndex];
+
+        Bounds3 nodeBounds(Vec3(lower.x, lower.y, lower.z), Vec3(upper.x, upper.y, upper.z));
+
+        if (nodeBounds.intersect(queryBounds)) {
+            const int leftIndex = lower.i;
+            const int rightIndex = upper.i;
+
+            if (lower.b) {  // Leaf - mesh
+                kernel_particleMeshCollision(data, meshData, idx, leftIndex, searchRadius, radius);
+            }
+            else {
+                if (stackCount < 63) {
+                    stack[stackCount++] = leftIndex;
+                    stack[stackCount++] = rightIndex;
+                }
+            }
+        }
+    }
+}
+
+
+// Apply position corrections
 __global__ void kernel_applyCorrections(FluidDeviceData data, float relaxation) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numParticles) return;
-    
-    float* particleData = data.vboData + idx * VBO_STRIDE;
 
+    float* particleData = data.vboData + idx * VBO_STRIDE;
     Vec3 pos(particleData[0], particleData[1], particleData[2]);
+
     pos += data.posCorr[idx] * relaxation;
-    
+
     particleData[0] = pos.x;
     particleData[1] = pos.y;
     particleData[2] = pos.z;
 }
+
 
 // Derive velocity from position change (PBD)
 __global__ void kernel_deriveVelocity(FluidDeviceData data, float dt) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numParticles) return;
-    
+
     float* particleData = data.vboData + idx * VBO_STRIDE;
     Vec3 pos(particleData[0], particleData[1], particleData[2]);
+
     data.vel[idx] = (pos - data.prevPos[idx]) / dt;
 }
 
 
-__global__ void kernel_initParticles(FluidDeviceData data, Bounds3 particleBounds,
-                                  int particlesPerLayer, int particlesPerRow, int particlesPerCol, float gridSpacing, unsigned long seed) {
+// Initialize particles
+__global__ void kernel_initParticles(
+    FluidDeviceData data,
+    Bounds3 spawnBounds,
+    int particlesPerLayer, int particlesPerRow, int particlesPerCol,
+    float gridSpacing, unsigned long seed)
+{
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numParticles) return;
-    
+
+    // Fast pseudo-random
+    unsigned int hash = idx + seed;
+    hash = (hash ^ 61) ^ (hash >> 16);
+    hash = hash + (hash << 3);
+    hash = hash ^ (hash >> 4);
+    hash = hash * 0x27d4eb2d;
+    hash = hash ^ (hash >> 15);
+    #define FRAND() (hash = hash * 1664525u + 1013904223u, float(hash) / float(0xFFFFFFFFu))
+
     float* particleData = data.vboData + idx * VBO_STRIDE;
-    
+
+    // Grid-based position
     int layer = idx / particlesPerLayer;
     int inLayer = idx % particlesPerLayer;
     int row = inLayer / particlesPerRow;
     int col = inLayer % particlesPerRow;
-    
-    particleData[0] = particleBounds.minimum.x + gridSpacing + col * gridSpacing;  // x
-    particleData[2] = particleBounds.minimum.z + gridSpacing + row * gridSpacing;  // z
-    particleData[1] = particleBounds.minimum.y + gridSpacing + layer * gridSpacing; // y
+
+    particleData[0] = spawnBounds.minimum.x + gridSpacing + col * gridSpacing;
+    particleData[2] = spawnBounds.minimum.z + gridSpacing + row * gridSpacing;
+    particleData[1] = spawnBounds.minimum.y + gridSpacing + layer * gridSpacing;
+
+    // Water-like blue color with slight variation
+    float colorVar = FRAND() * 0.2f;
+    particleData[3] = 0.2f + colorVar * 0.3f;  // R
+    particleData[4] = 0.5f + colorVar;          // G
+    particleData[5] = 0.9f + colorVar * 0.1f;   // B
+
+    // Lifetime = 1.0 (alive)
+    particleData[6] = 1.0f;
+
+    // Padding
+    particleData[7] = 0.0f;
+
+    // Random initial velocity
+    data.vel[idx].x = -1.0f + FRAND() * 2.0f;
+    data.vel[idx].y = -1.0f + FRAND() * 2.0f;
+    data.vel[idx].z = -1.0f + FRAND() * 2.0f;
+
+    #undef FRAND
 }
 
 
-// Host functions callable from FluidDemo.cpp
+//-----------------------------------------------------------------------------
+// Host functions
 
-bool FluidDemo::cudaRaycast(const Ray& ray, float& minT)
-{
+bool FluidDemo::cudaRaycast(const Ray& ray, float& minT) {
     minT = MaxFloat;
-
-    if (!meshes) 
-        return false;
+    if (!meshes) return false;
 
     deviceData->raycastHit.resize(1);
-
-    return meshes->rayCast(1, nullptr, ray, deviceData->raycastHit.buffer, 1);
+    meshes->rayCast(1, nullptr, ray, deviceData->raycastHit.buffer, 1);
     deviceData->raycastHit.getDeviceObject(minT, 0);
     return minT < MaxFloat;
 }
 
 
 void FluidDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, Scene* scene) {
-    cudaDeviceSynchronize();
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA error before init: %s\n", cudaGetErrorString(err));
-    }
-
-    if (!deviceData) 
+    if (!deviceData)
         deviceData = std::make_shared<FluidDeviceData>();
-
-    if (!meshes) 
+    if (!meshes)
         meshes = std::make_shared<CudaMeshes>();
+    if (!hash)
+        hash = std::make_shared<CudaHash>();
 
     meshes->initialize(scene);
+    hash->initialize();
 
     deviceData->numParticles = demoDesc.numParticles;
+    deviceData->particleRadius = demoDesc.particleRadius;
+    deviceData->worldOrig = -100.0f;
+    deviceData->gridSpacing = 2.5f * demoDesc.particleRadius;
 
-    // Allocate physics arrays using DeviceBuffer
     deviceData->vel.resize(demoDesc.numParticles, false);
     deviceData->prevPos.resize(demoDesc.numParticles, false);
     deviceData->posCorr.resize(demoDesc.numParticles, false);
 
     deviceData->vel.setZero();
 
-    // Register VBO with CUDA
+    // CUDA-OpenGL interop
     cudaGraphicsGLRegisterBuffer(vboResource, vbo, cudaGraphicsMapFlagsWriteDiscard);
 
-    // Map VBO and initialize particles on GPU
     float* d_vboData;
     size_t numBytes;
     cudaGraphicsMapResources(1, vboResource, 0);
     cudaGraphicsResourceGetMappedPointer((void**)&d_vboData, &numBytes, *vboResource);
+
     deviceData->vboData = d_vboData;
 
-    // Launch kernel to initialize positions/colors (not shown here)
-    // kernel_initParticles<<<...>>>(*deviceData, ...);
+    // Calculate grid layout
+    float gridSpacing = 2.0f * demoDesc.particleRadius;
+    Vec3 spawnSize = demoDesc.spawnBounds.maximum - demoDesc.spawnBounds.minimum;
+    float usableWidth = spawnSize.x - 2.0f * gridSpacing;
+    float usableDepth = spawnSize.z - 2.0f * gridSpacing;
+    int particlesPerRow = (int)(usableWidth / gridSpacing);
+    if (particlesPerRow < 1) particlesPerRow = 1;
+    int particlesPerCol = (int)(usableDepth / gridSpacing);
+    if (particlesPerCol < 1) particlesPerCol = 1;
+    int particlesPerLayer = particlesPerRow * particlesPerCol;
+
+    int numBlocks = (demoDesc.numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+    printf("FluidDemo: Initializing %d particles\n", demoDesc.numParticles);
+
+    kernel_initParticles<<<numBlocks, THREADS_PER_BLOCK>>>(
+        *deviceData, demoDesc.spawnBounds,
+        particlesPerLayer, particlesPerRow, particlesPerCol,
+        gridSpacing, (unsigned long)time(nullptr));
 
     cudaGraphicsUnmapResources(1, vboResource, 0);
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA initialization error: %s\n", cudaGetErrorString(err));
-    }
-    cudaDeviceSynchronize();
 }
 
-void FluidDemo::updateCudaPhysics(float dt, cudaGraphicsResource* vboResource) 
-{
+
+void FluidDemo::updateCudaPhysics(float dt, cudaGraphicsResource* vboResource) {
     if (deviceData->numParticles == 0) return;
+
     int numBlocks = (deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
 
-    // Map VBO
     float* d_vboData;
     size_t numBytes;
     cudaGraphicsMapResources(1, &vboResource, 0);
     cudaGraphicsResourceGetMappedPointer((void**)&d_vboData, &numBytes, vboResource);
+
     deviceData->vboData = d_vboData;
+
+    // Recompute spatial hash
+    hash->fillHash(deviceData->numParticles, deviceData->vboData, VBO_STRIDE, deviceData->gridSpacing);
+
+    int numSubSteps = 5;
+    float sdt = dt / (float)numSubSteps;
 
     auto meshesData = meshes->getDeviceData();
     auto hashData = hash->getDeviceData();
 
-    hash->fillHash(deviceData->numParticles, deviceData->vboData, VBO_STRIDE, deviceData->gridSpacing);
+    for (int subStep = 0; subStep < numSubSteps; subStep++) {
+        // Integrate
+        kernel_integrate<<<numBlocks, THREADS_PER_BLOCK>>>(
+            *deviceData, sdt, Vec3(0.0f, -demoDesc.gravity, 0.0f), demoDesc.maxVelocity);
 
-    // Physics pipeline
-    kernel_integrate<<<numBlocks, THREADS_PER_BLOCK>>>(*deviceData, dt, Vec3(0.0f, -demoDesc.gravity, 0.0f));
-    deviceData->posCorr.setZero();
-    kernel_separateHardParticles <<<numBlocks, THREADS_PER_BLOCK>>>(*deviceData, *hashData, demoDesc.particleRadius);
-    // Optionally: mesh collision kernel
+        deviceData->posCorr.setZero();
+
+        // Particle-particle collision
+        kernel_particleCollision_hash<<<numBlocks, THREADS_PER_BLOCK>>>(*deviceData, *hashData);
+        cudaCheck(cudaGetLastError());
+
+        const float relaxation = 0.3f;
+        kernel_applyCorrections<<<numBlocks, THREADS_PER_BLOCK>>>(*deviceData, relaxation);
+
+        // Wall collision
+        kernel_wallCollision<<<numBlocks, THREADS_PER_BLOCK>>>(
+            *deviceData, demoDesc.sceneBounds, deviceData->particleRadius);
+
+        // Mesh collision
+        if (meshesData->numMeshTriangles > 0) {
+            float meshSearchRadius = 2.0f * deviceData->particleRadius;
+            kernel_particleMeshesCollision<<<numBlocks, THREADS_PER_BLOCK>>>(
+                *deviceData, *meshesData, meshSearchRadius, deviceData->particleRadius);
+        }
+
+        // Derive velocity from position change
+        kernel_deriveVelocity<<<numBlocks, THREADS_PER_BLOCK>>>(*deviceData, sdt);
+    }
 
     cudaDeviceSynchronize();
     cudaGraphicsUnmapResources(1, &vboResource, 0);
-
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA physics error: %s\n", cudaGetErrorString(err));
-    }
+    cudaCheck(cudaGetLastError());
 }
+
 
 void FluidDemo::cleanupCudaPhysics(cudaGraphicsResource* vboResource) {
     if (!deviceData || deviceData->numParticles == 0) return;
-    cudaDeviceSynchronize();
+
     if (vboResource) {
         cudaGraphicsUnmapResources(1, &vboResource, 0);
     }
+
     if (deviceData) {
+        deviceData->vboData = nullptr;
         deviceData->free();
         deviceData.reset();
     }
+
     if (meshes) {
         meshes->cleanup();
     }
+
+    if (hash) {
+        hash->cleanup();
+    }
+
     if (vboResource) {
         cudaGraphicsUnregisterResource(vboResource);
     }
+
     cudaDeviceSynchronize();
 }

@@ -11,16 +11,18 @@ public:
     enum class Mode {
         Basic,      // Solid colored spheres
         Textured,   // Textured spheres (no rotation)
-        Ball        // Textured with quaternion rotation
+        Ball,       // Textured with quaternion rotation
+        Particle    // Solid color with lifetime, uniform radius
     };
 
     // Vertex attribute layout for the VBO
     struct AttribLayout {
         int strideFloats;    // Total floats per point
         int posOffset;       // Offset to xyz (floats)
-        int radiusOffset;    // Offset to radius
+        int radiusOffset;    // Offset to radius (-1 if using uniform radius)
         int colorOffset;     // Offset to rgb
         int quatOffset;      // Offset to quaternion (-1 if none)
+        int lifetimeOffset;  // Offset to lifetime (-1 if none)
     };
 
     PointRenderer();
@@ -37,7 +39,8 @@ public:
     
     // Render points with specified mode
     void render(Camera* camera, int count, Mode mode, GLuint texture, 
-                const Vec3& lightDir, int viewportWidth, int viewportHeight);
+                const Vec3& lightDir, int viewportWidth, int viewportHeight,
+                float uniformRadius = 0.0f);
     
     // Shadow rendering - renders points from light's perspective
     void renderShadowPass(int count, const Vec3& lightDir, const Bounds3& sceneBounds,
@@ -65,6 +68,7 @@ private:
     GLuint shaderBasic = 0;
     GLuint shaderTextured = 0;
     GLuint shaderBall = 0;
+    GLuint shaderParticle = 0;
     GLuint shaderShadow = 0;
     
     // Shadow FBO

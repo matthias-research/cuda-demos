@@ -1,3 +1,272 @@
 #include "FluidDemo.h"
+#include "RenderUtils.h"
+#include <imgui.h>
+#include <cuda_runtime.h>
+#include <iostream>
+#include <cmath>
 
-// Empty implementation for now
+
+FluidDemo::FluidDemo(const FluidDemoDescriptor& desc) {
+    demoDesc = desc;
+
+    // Initialize point renderer with particle layout (8 floats per particle)
+    PointRenderer::AttribLayout layout;
+    layout.strideFloats = 8;
+    layout.posOffset = 0;
+    layout.radiusOffset = -1;      // Using uniform radius
+    layout.colorOffset = 3;
+    layout.quatOffset = -1;
+    layout.lifetimeOffset = 6;
+
+    particleRenderer = new PointRenderer();
+    particleRenderer->init(demoDesc.numParticles, layout);
+
+    // Initialize mesh renderer
+    meshRenderer = new Renderer();
+    meshRenderer->init();
+
+    // Scene will be loaded on demand
+    scene = new Scene();
+
+    // Initialize skybox
+    skybox = new Skybox();
+    if (!skybox->loadFromBMP("assets/skybox.bmp")) {
+        delete skybox;
+        skybox = nullptr;
+        showSkybox = false;
+    }
+
+    paused = true;
+    initParticles();
+}
+
+
+FluidDemo::~FluidDemo() {
+    if (cudaVboResource) {
+        cleanupCudaPhysics(cudaVboResource);
+    }
+    if (particleRenderer) {
+        particleRenderer->cleanup();
+        delete particleRenderer;
+    }
+    if (scene) {
+        scene->cleanup();
+        delete scene;
+    }
+    if (meshRenderer) {
+        meshRenderer->cleanup();
+        delete meshRenderer;
+    }
+    if (skybox) {
+        skybox->cleanup();
+        delete skybox;
+    }
+}
+
+
+void FluidDemo::ensureSceneLoaded() {
+    if (!sceneLoaded) {
+        if (!demoDesc.meshName.empty()) {
+            printf("Loading scene: %s\n", demoDesc.meshName.c_str());
+            if (scene->load("assets/" + demoDesc.meshName)) {
+                showScene = true;
+                printf("Scene loaded successfully!\n");
+            } else {
+                printf("Failed to load scene: %s\n", demoDesc.meshName.c_str());
+            }
+        }
+        sceneLoaded = true;
+    }
+
+    // Reinitialize CUDA if particle count changed
+    if (lastInitializedParticleCount != demoDesc.numParticles) {
+        if (cudaVboResource) {
+            cleanupCudaPhysics(cudaVboResource);
+        }
+        initCudaPhysics(particleRenderer->getVBO(), &cudaVboResource, scene);
+        lastInitializedParticleCount = demoDesc.numParticles;
+    }
+}
+
+
+void FluidDemo::initParticles() {
+    GLuint vbo = particleRenderer->getVBO();
+    if (vbo != 0) {
+        initCudaPhysics(vbo, &cudaVboResource, scene);
+    }
+}
+
+
+void FluidDemo::update(float deltaTime) {
+    ensureSceneLoaded();
+
+    if (lastUpdateTime > 0.0f) {
+        fps = 1.0f / deltaTime;
+    }
+    lastUpdateTime = deltaTime;
+
+    if (!paused && cudaVboResource) {
+        updateCudaPhysics(deltaTime, cudaVboResource);
+    }
+}
+
+
+bool FluidDemo::raycast(const Vec3& orig, const Vec3& dir, float& minT) {
+    minT = MaxFloat;
+    float t;
+    if (cudaRaycast(Ray(orig, dir), t)) {
+        minT = t;
+    }
+
+    // Raycast against floor
+    if (dir.y < -1e-6) {
+        t = (demoDesc.sceneBounds.minimum.y - orig.y) / dir.y;
+        if (t > 0 && t < minT) {
+            minT = t;
+        }
+    }
+    return minT < MaxFloat;
+}
+
+
+void FluidDemo::render(uchar4* d_out, int width, int height) {
+    cudaMemset(d_out, 0, width * height * sizeof(uchar4));
+}
+
+
+void FluidDemo::renderUI() {
+    ImGui::Text("=== Fluid Particle Demo ===");
+    ImGui::Separator();
+
+    if (paused) {
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "[PAUSED] - Press 'P' to resume");
+    } else {
+        ImGui::Text("Press 'P' to pause simulation");
+    }
+    ImGui::Separator();
+
+    ImGui::Text("Performance:");
+    ImGui::Text("  FPS: %.1f", fps);
+    ImGui::Text("  Frame Time: %.2f ms", lastUpdateTime * 1000.0f);
+    ImGui::Text("  Particle Count: %d", demoDesc.numParticles);
+
+    ImGui::Separator();
+    ImGui::Text("Camera Controls:");
+    ImGui::Text("  WASD: Move, Q/E: Up/Down");
+    ImGui::Text("  Mouse: Orbit/Pan/Rotate");
+    ImGui::Text("  Wheel: Zoom");
+
+    ImGui::Separator();
+    ImGui::Text("Simulation Parameters:");
+
+    bool particleCountChanged = false;
+    if (ImGui::SliderInt("Particle Count##fluid", &demoDesc.numParticles, 1000, 200000)) {
+        particleCountChanged = true;
+    }
+
+    ImGui::SliderFloat("Gravity##fluid", &demoDesc.gravity, 0.0f, 20.0f, "%.1f");
+    ImGui::SliderFloat("Particle Radius##fluid", &demoDesc.particleRadius, 0.1f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Max Velocity##fluid", &demoDesc.maxVelocity, 10.0f, 200.0f, "%.1f");
+
+    ImGui::Separator();
+    ImGui::Text("Lighting:");
+    float lightAzimuthDegrees = demoDesc.lightAzimuth * 180.0f / 3.14159265f;
+    float lightElevationDegrees = demoDesc.lightElevation * 180.0f / 3.14159265f;
+    if (ImGui::SliderFloat("Light Azimuth##fluid", &lightAzimuthDegrees, 0.0f, 360.0f)) {
+        demoDesc.lightAzimuth = lightAzimuthDegrees * 3.14159265f / 180.0f;
+    }
+    if (ImGui::SliderFloat("Light Elevation##fluid", &lightElevationDegrees, 0.0f, 180.0f)) {
+        demoDesc.lightElevation = lightElevationDegrees * 3.14159265f / 180.0f;
+    }
+    float sinElev = sinf(demoDesc.lightElevation);
+    float cosElev = cosf(demoDesc.lightElevation);
+    float sinAzim = sinf(demoDesc.lightAzimuth);
+    float cosAzim = cosf(demoDesc.lightAzimuth);
+    lightDir = Vec3(sinElev * cosAzim, cosElev, sinElev * sinAzim).normalized();
+
+    ImGui::Separator();
+    ImGui::Text("Scene:");
+    if (scene && scene->getMeshCount() > 0) {
+        ImGui::Text("  Meshes loaded: %zu", scene->getMeshCount());
+        ImGui::Checkbox("Show Scene##fluid", &showScene);
+    } else {
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "No mesh loaded");
+    }
+
+    if (skybox) {
+        ImGui::Checkbox("Show Skybox##fluid", &showSkybox);
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button("Reset View##fluid", ImVec2(200, 0))) {
+        if (camera) camera->resetView();
+    }
+
+    // Handle particle count change
+    if (particleCountChanged) {
+        if (cudaVboResource) {
+            cleanupCudaPhysics(cudaVboResource);
+            cudaVboResource = nullptr;
+        }
+        particleRenderer->resize(demoDesc.numParticles);
+        initParticles();
+    }
+}
+
+
+void FluidDemo::reset() {
+    if (cudaVboResource) {
+        cleanupCudaPhysics(cudaVboResource);
+        cudaVboResource = nullptr;
+    }
+    initParticles();
+
+    if (camera) {
+        camera->lookAt(demoDesc.cameraPos, demoDesc.cameraLookAt);
+    }
+}
+
+
+void FluidDemo::onKeyPress(unsigned char key) {
+    if (key == 'p' || key == 'P') {
+        paused = !paused;
+    }
+}
+
+
+void FluidDemo::render3D(int width, int height) {
+    if (!camera || !particleRenderer) return;
+
+    camera->nearClip = demoDesc.cameraNear;
+    camera->farClip = demoDesc.cameraFar;
+
+    glViewport(0, 0, width, height);
+    glEnable(GL_DEPTH_TEST);
+    glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    if (skybox && showSkybox) {
+        skybox->render(camera);
+    }
+
+    // Render particles with uniform radius
+    particleRenderer->render(camera, demoDesc.numParticles, PointRenderer::Mode::Particle,
+                             0, lightDir, width, height, demoDesc.particleRadius);
+
+    // Render static scene meshes
+    if (showScene && scene && meshRenderer) {
+        Vec3 lightDirection = lightDir.normalized();
+        meshRenderer->getLight().x = lightDirection.x;
+        meshRenderer->getLight().y = lightDirection.y;
+        meshRenderer->getLight().z = lightDirection.z;
+
+        glDisable(GL_CULL_FACE);
+        meshRenderer->getMaterial().ambientStrength = demoDesc.meshAmbient;
+
+        for (const Mesh* mesh : scene->getMeshes()) {
+            meshRenderer->renderMesh(*mesh, camera, width, height, 1.0f, nullptr, 0.0f, nullptr);
+        }
+    }
+
+    glDisable(GL_DEPTH_TEST);
+}

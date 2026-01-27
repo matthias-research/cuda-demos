@@ -220,6 +220,8 @@ void renderGUI() {
                 if (demos[i]->is3D()) {
                     if (auto ballsDemo = dynamic_cast<BallsDemo*>(demos[i].get())) {
                         ballsDemo->applyCameraSettings();
+                    } else if (auto fluidDemo = dynamic_cast<FluidDemo*>(demos[i].get())) {
+                        fluidDemo->applyCameraSettings();
                     }
                 }
             }
@@ -803,7 +805,12 @@ int main(int argc, char** argv) {
     demos.push_back(std::move(cityDemo));
     
     demos.push_back(std::make_unique<MandelbrotDemo>());
-    demos.push_back(std::make_unique<FluidDemo>());
+
+    FluidDemoDescriptor fluidDesc;
+    fluidDesc.setupDefaultScene();
+    auto fluidDemo = std::make_unique<FluidDemo>(fluidDesc);
+    fluidDemo->setName("Fluid: Default");
+    demos.push_back(std::move(fluidDemo));
     
     // Set camera for 3D demos
     for (auto& demo : demos) {

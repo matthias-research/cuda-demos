@@ -3,51 +3,48 @@
 #include <string>
 #include <memory>
 #include "Vec.h"
+#include "Demo.h"
+#include "Camera.h"
+#include "Scene.h"
+#include "Renderer.h"
+#include "PointRenderer.h"
+#include "Skybox.h"
 #include <GL/glew.h>
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
-#include "Scene.h"
-#include "Demo.h"
 
 struct FluidDemoDescriptor {
     int numParticles = 100000;
     float gravity = 9.8f;
-    float viscosity = 0.1f;
-    float restDensity = 1000.0f;
     float particleRadius = 0.2f;
-    float kernelRadius = 0.4f;
-    float gridSpacing = 0.4f;
-    float timeStep = 0.005f;
-    float boundaryDamping = 0.5f;
-    float surfaceTension = 0.0f;
-    float vorticityConfinement = 0.0f;
     float maxVelocity = 100.0f;
 
     std::string meshName = "";
- 
-    // Optionally, add scene/camera presets
-    std::string sceneName = "default";
+    Bounds3 sceneBounds = Bounds3(Vec3(-50.0f, 0.0f, -50.0f), Vec3(50.0f, 100.0f, 50.0f));
+    Bounds3 spawnBounds = Bounds3(Vec3(-10.0f, 20.0f, -10.0f), Vec3(10.0f, 60.0f, 10.0f));
+
+    // Lighting
+    float meshAmbient = 0.3f;
+    float lightAzimuth = 1.2f;
+    float lightElevation = 1.1f;
+
     // Camera presets
-    Vec3 cameraPos = Vec3(0.0f, 20.0f, 50.0f);
-    Vec3 cameraLookAt = Vec3(0.0f, 10.0f, 0.0f);
+    Vec3 cameraPos = Vec3(0.0f, 30.0f, 80.0f);
+    Vec3 cameraLookAt = Vec3(0.0f, 20.0f, 0.0f);
     float cameraNear = 0.1f;
     float cameraFar = 1000.0f;
 
-    void setupSphereScene()
-    {
+    void setupDefaultScene() {
         numParticles = 50000;
-        gravity = 0.0f;
-        viscosity = 0.1f;
-        restDensity = 1000.0f;
-        particleRadius = 0.2f;
-        kernelRadius = 0.4f;
-        timeStep = 0.005f;
-        maxVelocity = 100.0f;
+        gravity = 9.8f;
+        particleRadius = 0.3f;
+        maxVelocity = 50.0f;
 
-        sceneName = "sphere";
+        sceneBounds = Bounds3(Vec3(-30.0f, 0.0f, -30.0f), Vec3(30.0f, 80.0f, 30.0f));
+        spawnBounds = Bounds3(Vec3(-10.0f, 30.0f, -10.0f), Vec3(10.0f, 70.0f, 10.0f));
 
-        cameraPos = Vec3(0.0f, 20.0f, 50.0f);
-        cameraLookAt = Vec3(0.0f, 10.0f, 0.0f);
+        cameraPos = Vec3(0.0f, 40.0f, 100.0f);
+        cameraLookAt = Vec3(0.0f, 20.0f, 0.0f);
     }
 };
 
@@ -59,23 +56,23 @@ class CudaHash;
 
 class FluidDemo : public Demo {
 public:
-    FluidDemo() = default;
-    ~FluidDemo() override = default;
+    FluidDemo(const FluidDemoDescriptor& desc);
+    ~FluidDemo() override;
 
-    const char* getName() const override { return "Fluid Demo"; }
+    const char* getName() const override { return customName.c_str(); }
+    void setName(const std::string& name) { customName = name; }
     bool is3D() const override { return true; }
-    void update(float /*deltaTime*/) override {}
-    void render(uchar4* /*d_out*/, int /*width*/, int /*height*/) override {}
-    void renderUI() override {}
-    void reset() override {}
-    void render3D(int /*width*/, int /*height*/) override {}
-    void setCamera(Camera* /*cam*/) override {}
-    bool raycast(const Vec3& /*orig*/, const Vec3& /*dir*/, float& /*t*/) override { return false; }
-    void onMouseClick(int /*button*/, int /*state*/, int /*x*/, int /*y*/) override {}
-    void onMouseDrag(int /*x*/, int /*y*/) override {}
-    void onMouseWheel(int /*wheel*/, int /*direction*/, int /*x*/, int /*y*/) override {}
-    void onKeyPress(unsigned char /*key*/) override {}
-    void onSpecialKey(int /*key*/) override {}
+    void setCamera(Camera* cam) override { camera = cam; }
+    void applyCameraSettings() { if (camera) camera->lookAt(demoDesc.cameraPos, demoDesc.cameraLookAt); }
+    
+    void update(float deltaTime) override;
+    void render(uchar4* d_out, int width, int height) override;
+    void render3D(int width, int height) override;
+    void renderUI() override;
+    void reset() override;
+    
+    bool raycast(const Vec3& orig, const Vec3& dir, float& t) override;
+    void onKeyPress(unsigned char key) override;
 
     // CUDA physics functions (implemented in FluidDemo.cu)
     void initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, Scene* scene);
@@ -84,10 +81,40 @@ public:
     bool cudaRaycast(const Ray& ray, float& t);
 
 private:
+    void ensureSceneLoaded();
+    void initParticles();
+
+    FluidDemoDescriptor demoDesc;
+    std::string customName = "Fluid Demo";
+    int lastInitializedParticleCount = -1;
+
+    // Point rendering
+    PointRenderer* particleRenderer = nullptr;
+    
+    // CUDA resources
+    cudaGraphicsResource* cudaVboResource = nullptr;
     std::shared_ptr<FluidDeviceData> deviceData = nullptr;
     std::shared_ptr<CudaMeshes> meshes = nullptr;
     std::shared_ptr<CudaHash> hash = nullptr;
 
-    FluidDemoDescriptor demoDesc;
-    std::string customName = "Fluid Demo";
+    // Performance tracking
+    float lastUpdateTime = 0.0f;
+    float fps = 0.0f;
+    bool paused = true;
+
+    // Camera
+    Camera* camera = nullptr;
+
+    // Lighting
+    Vec3 lightDir = Vec3(0.3f, 0.8f, 0.3f).normalized();
+
+    // Static scene rendering
+    Scene* scene = nullptr;
+    Renderer* meshRenderer = nullptr;
+    bool showScene = false;
+    bool sceneLoaded = false;
+
+    // Skybox
+    Skybox* skybox = nullptr;
+    bool showSkybox = true;
 };

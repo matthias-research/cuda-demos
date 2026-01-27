@@ -271,6 +271,67 @@ void main() {
 }
 )";
 
+// Particle shader - solid colored spheres with lifetime, uniform radius
+static const char* particleVertexShader = R"(
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 2) in vec3 aColor;
+layout (location = 4) in float aLifetime;
+
+uniform mat4 projectionMat;
+uniform mat4 viewMat;
+uniform float pointScale;
+uniform float uniformRadius;
+
+out vec3 fragColor;
+out vec3 eyePos;
+out float lifetime;
+
+void main() {
+    vec4 eyeSpacePos = viewMat * vec4(aPos, 1.0);
+    gl_Position = projectionMat * eyeSpacePos;
+    
+    fragColor = aColor;
+    eyePos = eyeSpacePos.xyz;
+    lifetime = aLifetime;
+    
+    float dist = length(eyeSpacePos.xyz);
+    gl_PointSize = uniformRadius * (pointScale / dist);
+}
+)";
+
+static const char* particleFragmentShader = R"(
+#version 330 core
+uniform vec3 lightDir;
+
+in vec3 fragColor;
+in vec3 eyePos;
+in float lifetime;
+
+out vec4 outColor;
+
+void main() {
+    if (lifetime < 0.0) discard;
+    
+    vec2 coord = gl_PointCoord * 2.0 - 1.0;
+    coord.y = -coord.y;
+    float r2 = dot(coord, coord);
+    if (r2 > 1.0) discard;
+    
+    float h = sqrt(1.0 - r2);
+    vec3 normal = normalize(vec3(coord.x, coord.y, h));
+    
+    float diffuse = max(0.0, dot(lightDir, normal));
+    float ambient = 0.4;
+    
+    vec3 halfwayDir = normalize(lightDir + vec3(0.0, 0.0, 1.0));
+    float specular = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
+    
+    vec3 result = fragColor * (ambient + diffuse * 0.6) + vec3(1.0) * specular * 0.3;
+    outColor = vec4(result, 1.0);
+}
+)";
+
 PointRenderer::PointRenderer() {}
 
 PointRenderer::~PointRenderer() {
@@ -302,9 +363,11 @@ void PointRenderer::setupVertexAttributes() {
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)(layout.posOffset * sizeof(float)));
     glEnableVertexAttribArray(0);
     
-    // Radius (location 1)
-    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, stride, (void*)(layout.radiusOffset * sizeof(float)));
-    glEnableVertexAttribArray(1);
+    // Radius (location 1) - optional for particle mode
+    if (layout.radiusOffset >= 0) {
+        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, stride, (void*)(layout.radiusOffset * sizeof(float)));
+        glEnableVertexAttribArray(1);
+    }
     
     // Color (location 2)
     glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, stride, (void*)(layout.colorOffset * sizeof(float)));
@@ -315,12 +378,19 @@ void PointRenderer::setupVertexAttributes() {
         glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, (void*)(layout.quatOffset * sizeof(float)));
         glEnableVertexAttribArray(3);
     }
+    
+    // Lifetime (location 4) - optional for particle mode
+    if (layout.lifetimeOffset >= 0) {
+        glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, stride, (void*)(layout.lifetimeOffset * sizeof(float)));
+        glEnableVertexAttribArray(4);
+    }
 }
 
 void PointRenderer::initShaders() {
     shaderBasic = RenderUtils::createShaderProgram(basicVertexShader, basicFragmentShader);
     shaderTextured = RenderUtils::createShaderProgram(texturedVertexShader, texturedFragmentShader);
     shaderBall = RenderUtils::createShaderProgram(ballVertexShader, ballFragmentShader);
+    shaderParticle = RenderUtils::createShaderProgram(particleVertexShader, particleFragmentShader);
     shaderShadow = RenderUtils::createShaderProgram(shadowVertexShader, shadowFragmentShader);
 }
 
@@ -396,7 +466,8 @@ void PointRenderer::getLightMatrix(float* outMatrix, const Vec3& lightDir, const
 }
 
 void PointRenderer::render(Camera* camera, int count, Mode mode, GLuint texture,
-                           const Vec3& lightDir, int viewportWidth, int viewportHeight) {
+                           const Vec3& lightDir, int viewportWidth, int viewportHeight,
+                           float uniformRadius) {
     if (!camera || count <= 0) return;
     
     glEnable(GL_PROGRAM_POINT_SIZE);
@@ -405,6 +476,7 @@ void PointRenderer::render(Camera* camera, int count, Mode mode, GLuint texture,
     GLuint shader = shaderBasic;
     if (mode == Mode::Textured) shader = shaderTextured;
     else if (mode == Mode::Ball) shader = shaderBall;
+    else if (mode == Mode::Particle) shader = shaderParticle;
     
     glUseProgram(shader);
     
@@ -434,7 +506,10 @@ void PointRenderer::render(Camera* camera, int count, Mode mode, GLuint texture,
     );
     glUniform3f(glGetUniformLocation(shader, "lightDir"), viewSpaceLight.x, viewSpaceLight.y, viewSpaceLight.z);
     
-    if (mode == Mode::Textured || mode == Mode::Ball) {
+    if (mode == Mode::Particle) {
+        glUniform1f(glGetUniformLocation(shader, "uniformRadius"), uniformRadius);
+    }
+    else if (mode == Mode::Textured || mode == Mode::Ball) {
         glUniform3f(glGetUniformLocation(shader, "viewPos"), camPos.x, camPos.y, camPos.z);
         
         glActiveTexture(GL_TEXTURE0);
@@ -502,6 +577,7 @@ void PointRenderer::cleanup() {
     if (shaderBasic) { glDeleteProgram(shaderBasic); shaderBasic = 0; }
     if (shaderTextured) { glDeleteProgram(shaderTextured); shaderTextured = 0; }
     if (shaderBall) { glDeleteProgram(shaderBall); shaderBall = 0; }
+    if (shaderParticle) { glDeleteProgram(shaderParticle); shaderParticle = 0; }
     if (shaderShadow) { glDeleteProgram(shaderShadow); shaderShadow = 0; }
     if (shadowFBO) { glDeleteFramebuffers(1, &shadowFBO); shadowFBO = 0; }
     if (shadowTexture) { glDeleteTextures(1, &shadowTexture); shadowTexture = 0; }

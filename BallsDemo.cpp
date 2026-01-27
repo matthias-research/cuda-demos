@@ -18,6 +18,7 @@ BallsDemo::BallsDemo(const BallsDemoDescriptor& desc) {
     layout.radiusOffset = 3;
     layout.colorOffset = 4;
     layout.quatOffset = 7;
+    layout.lifetimeOffset = -1;
     
     pointRenderer = new PointRenderer();
     pointRenderer->init(demoDesc.numBalls, layout);
