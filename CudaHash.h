@@ -30,6 +30,16 @@ struct HashDeviceData
     DeviceBuffer<int> neighbors;
 };
 
+
+static const int HASH_SIZE = 37000111;  
+
+
+__device__ inline unsigned int hashFunction(int xi, int yi, int zi)
+{
+    unsigned int h = abs((xi * 92837111) ^ (yi * 689287499) ^ (zi * 283923481)) % HASH_SIZE;
+    return h;
+}
+
 class CudaHash
 {
 public:

@@ -245,7 +245,3 @@ public:
     void onKeyPress(unsigned char key) override;
 };
 
-// Factory functions for BallsDeviceData (implemented in BallsDemo.cu)
-BallsDeviceData* createBallsDeviceData();
-void deleteBallsDeviceData(BallsDeviceData* data);
-

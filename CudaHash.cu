@@ -4,7 +4,6 @@
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
 
-static const int HASH_SIZE = 37000111;  // Prime number for better distribution
 
 
 __device__ inline int hashPosition(const Vec3& pos, float gridSpacing, float worldOrig) 
@@ -13,8 +12,7 @@ __device__ inline int hashPosition(const Vec3& pos, float gridSpacing, float wor
     int yi = floorf((pos.y - worldOrig) / gridSpacing);
     int zi = floorf((pos.z - worldOrig) / gridSpacing);
     
-    unsigned int h = abs((xi * 92837111) ^ (yi * 689287499) ^ (zi * 283923481)) % HASH_SIZE;
-    return h;
+    return hashFunction(xi, yi, zi);
 }
 
 __global__ void kernel_fillHash(HashDeviceData data, const float* positions, int stride) 
@@ -87,7 +85,7 @@ __global__ void kernel_findNeighbors(HashDeviceData data, const float* positions
                 int cellY = yi + dy;
                 int cellZ = zi + dz;
                 
-                unsigned int h = abs((cellX * 92837111) ^ (cellY * 689287499) ^ (cellZ * 283923481)) % HASH_SIZE;
+                unsigned int h = hashFunction(cellX, cellY, cellZ);
                 
                 int first = data.hashCellFirst[h];
                 int last = data.hashCellLast[h];
