@@ -1,9 +1,10 @@
 #include "Renderer.h"
+#include "RenderUtils.h"
 #include <iostream>
 #include <cmath>
 
 // Vertex shader with texture support
-const char* texturedVertexShaderSource = R"(
+static const char* texturedVertexShaderSource = R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
@@ -30,7 +31,7 @@ void main()
 )";
 
 // Fragment shader with texture and Phong lighting
-const char* texturedFragmentShaderSource = R"(
+static const char* texturedFragmentShaderSource = R"(
 #version 330 core
 out vec4 FragColor;
 
@@ -124,22 +125,6 @@ void main()
 }
 )";
 
-// Helper function to compile shader
-static GLuint compileShader(GLenum type, const char* source) {
-    GLuint shader = glCreateShader(type);
-    glShaderSource(shader, 1, &source, nullptr);
-    glCompileShader(shader);
-    
-    GLint success;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        char infoLog[512];
-        glGetShaderInfoLog(shader, 512, nullptr, infoLog);
-        std::cerr << "Shader compilation failed:\n" << infoLog << std::endl;
-    }
-    
-    return shader;
-}
 
 // Matrix helper functions
 static void setIdentity(float* mat) {
@@ -199,27 +184,8 @@ Renderer::~Renderer() {
 }
 
 bool Renderer::init() {
-    GLuint vertexShader = compileShader(GL_VERTEX_SHADER, texturedVertexShaderSource);
-    GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, texturedFragmentShaderSource);
-    
-    shaderProgram = glCreateProgram();
-    glAttachShader(shaderProgram, vertexShader);
-    glAttachShader(shaderProgram, fragmentShader);
-    glLinkProgram(shaderProgram);
-    
-    GLint success;
-    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
-    if (!success) {
-        char infoLog[512];
-        glGetProgramInfoLog(shaderProgram, 512, nullptr, infoLog);
-        std::cerr << "Shader linking failed:\n" << infoLog << std::endl;
-        return false;
-    }
-    
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
-    
-    return true;
+    shaderProgram = RenderUtils::createShaderProgram(texturedVertexShaderSource, texturedFragmentShaderSource);
+    return shaderProgram != 0;
 }
 
 void Renderer::renderMesh(const Mesh& mesh, Camera* camera, int width, int height, float scale, const float* modelTransform, float rotationX, const ShadowMap* shadowMap) {

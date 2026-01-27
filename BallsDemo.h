@@ -6,6 +6,7 @@
 #include "Vec.h"
 #include "Scene.h"
 #include "Renderer.h"
+#include "PointRenderer.h"
 #include "Skybox.h"
 #include <GL/glew.h>
 #include <cuda_runtime.h>
@@ -171,12 +172,14 @@ private:
 
     BallsDemoDescriptor demoDesc;
     std::string customName = "3D Bouncing Balls";
-    int lastInitializedBallCount = -1;  // Track for reinit detection
-    GLuint vao, vbo;
-    GLuint ballShader;
-    GLuint ballShadowShader;
-    GLuint shadowFBO, shadowTexture;
-    int shadowWidth, shadowHeight;
+    int lastInitializedBallCount = -1;
+    
+    // Point rendering (owns VBO)
+    PointRenderer* pointRenderer = nullptr;
+    GLuint shadowFBO = 0;
+    GLuint shadowTexture = 0;
+    int shadowWidth = 0;
+    int shadowHeight = 0;
     
     // CUDA resources
     cudaGraphicsResource* cudaVboResource = nullptr;
@@ -193,30 +196,24 @@ private:
     std::shared_ptr<CudaHash> hash = nullptr;
 
     // Lighting
-
-    // To the light (OpenGl convention)
     Vec3 lightDir = Vec3(0.1f, 0.1f, 0.5f).normalized();
-    bool useShadows = false;  // Toggle shadow mapping on/off
-    bool useTextureMode = false;  // Toggle between texture mode and beach ball pattern
-    GLuint ballTexture = 0;  // Texture for ball rendering
+    bool useShadows = false;
+    bool useTextureMode = false;
+    GLuint ballTexture = 0;
 
     // Static scene rendering
     Scene* scene = nullptr;
-    Renderer* renderer = nullptr;
+    Renderer* meshRenderer = nullptr;
     bool showScene = false;
-    bool sceneLoaded = false;  // Flag for lazy loading
+    bool sceneLoaded = false;
     
     // Skybox
     Skybox* skybox = nullptr;
     bool showSkybox = true;
     
     void initBalls();
-    void initGL();
-    void initShaders();
     void initShadowBuffer(int width, int height);
     void renderShadows(int width, int height);
-    void cleanupGL();
-    GLuint loadTexture(const std::string& filename);
 
 public:
     BallsDemo(const BallsDemoDescriptor& desc);
