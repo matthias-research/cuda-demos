@@ -54,6 +54,8 @@ struct FluidDemoDescriptor {
 
 struct FluidDeviceData;
 class CudaMeshes;
+class CudaHash;
+
 
 class FluidDemo : public Demo {
 public:
@@ -84,6 +86,8 @@ public:
 private:
     std::shared_ptr<FluidDeviceData> deviceData = nullptr;
     std::shared_ptr<CudaMeshes> meshes = nullptr;
+    std::shared_ptr<CudaHash> hash = nullptr;
+
     FluidDemoDescriptor demoDesc;
     std::string customName = "Fluid Demo";
 };

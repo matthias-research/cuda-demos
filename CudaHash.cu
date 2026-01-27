@@ -1,0 +1,185 @@
+#include "CudaHash.h"
+#include <cuda_runtime.h>
+#include <vector>
+#include <thrust/device_ptr.h>
+#include <thrust/sort.h>
+
+static const int HASH_SIZE = 37000111;  // Prime number for better distribution
+
+
+__device__ inline int hashPosition(const Vec3& pos, float gridSpacing, float worldOrig) 
+{
+    int xi = floorf((pos.x - worldOrig) / gridSpacing);
+    int yi = floorf((pos.y - worldOrig) / gridSpacing);
+    int zi = floorf((pos.z - worldOrig) / gridSpacing);
+    
+    unsigned int h = abs((xi * 92837111) ^ (yi * 689287499) ^ (zi * 283923481)) % HASH_SIZE;
+    return h;
+}
+
+__global__ void kernel_fillHash(HashDeviceData data, const float* positions, int stride) 
+{
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx >= data.numPoints) 
+        return;
+    
+    const float* posPtr = positions + idx * stride;
+    Vec3 pos(posPtr[0], posPtr[1], posPtr[2]);
+    
+    // Compute hash
+    int h = hashPosition(pos, data.spacing, data.worldOrig);
+    
+    data.hashVals[idx] = h;
+    data.hashIds[idx] = idx;
+}
+
+__global__ void kernel_setupHash(HashDeviceData data) 
+{
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx >= data.numPoints) 
+        return;
+
+    unsigned int h = data.hashVals[idx];
+    
+    // Find cell boundaries
+    if (idx == 0) {
+        data.hashCellFirst[h] = 0;
+    } else {
+        unsigned int prevH = data.hashVals[idx - 1];
+        if (h != prevH) {
+            data.hashCellFirst[h] = idx;
+            data.hashCellLast[prevH] = idx;
+        }
+    }
+    
+    if (idx == data.numPoints - 1) {
+        data.hashCellLast[h] = data.numPoints;
+    }
+}
+
+__global__ void kernel_findNeighbors(HashDeviceData data, const float* positions, int stride, bool countOnly) 
+{
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx >= data.numPoints) return;
+    
+    const float* posPtr = positions + idx * stride;
+    Vec3 pos(posPtr[0], posPtr[1], posPtr[2]);
+    
+    int h = hashPosition(pos, data.spacing, data.worldOrig);
+
+    float s = 1.0f / data.spacing;
+
+    int xi = floorf((pos.x - data.worldOrig) * s);
+    int yi = floorf((pos.y - data.worldOrig) * s);
+    int zi = floorf((pos.z - data.worldOrig) * s);
+    
+    // Check neighboring cells (3x3x3 = 27 cells)
+
+    int neighborNr = data.firstNeighbor[idx];
+
+    for (int dx = -1; dx <= 1; dx++) 
+    {
+        for (int dy = -1; dy <= 1; dy++) 
+        {
+            for (int dz = -1; dz <= 1; dz++) 
+            {
+                int cellX = xi + dx;
+                int cellY = yi + dy;
+                int cellZ = zi + dz;
+                
+                unsigned int h = abs((cellX * 92837111) ^ (cellY * 689287499) ^ (cellZ * 283923481)) % HASH_SIZE;
+                
+                int first = data.hashCellFirst[h];
+                int last = data.hashCellLast[h];
+                
+                // Check all balls in this cell
+                for (int i = first; i < last; i++) {
+                    int otherIdx = data.hashIds[i];
+
+                    if (countOnly)
+                    {
+                        data.firstNeighbor[idx] = data.firstNeighbor[idx] + 1;
+                    }
+                    else
+                    {
+                        data.neighbors[neighborNr] = otherIdx;
+                        neighborNr++;
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+// Host functions 
+
+void CudaHash::initialize() 
+{
+    if (!deviceData) 
+        deviceData = std::make_shared<HashDeviceData>();
+}
+
+
+void CudaHash::cleanup() 
+{
+    if (deviceData) {
+        deviceData->free();
+        deviceData.reset();
+    }
+}
+
+void CudaHash::fillHash(int numPoints, const float* positions, int stride, float spacing)
+{
+    if (!deviceData)
+        return;
+
+    deviceData->numPoints = numPoints;
+    deviceData->spacing = spacing;
+    deviceData->worldOrig = -100.0f;
+
+    deviceData->hashVals.resize(numPoints, false);
+    deviceData->hashIds.resize(numPoints, false);
+    deviceData->hashCellFirst.resize(HASH_SIZE, false);
+    deviceData->hashCellLast.resize(HASH_SIZE, false);
+
+    kernel_fillHash<<<numPoints / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK>>>(*deviceData, positions, stride);
+    cudaCheck(cudaGetLastError());
+
+    // Sort by hash
+    thrust::device_ptr<int> hashVals(deviceData->hashVals.buffer);
+    thrust::device_ptr<int> hashIds(deviceData->hashIds.buffer);
+    thrust::sort_by_key(hashVals, hashVals + deviceData->numPoints, hashIds);
+
+    deviceData->hashCellFirst.setZero();
+    deviceData->hashCellLast.setZero();
+
+    kernel_setupHash<<<numPoints / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK>>>(*deviceData);
+    cudaCheck(cudaGetLastError());
+}
+
+void CudaHash::findNeighbors(int numPoints, const float* positions, int stride)
+{
+    if (!deviceData)
+        return;
+
+    deviceData->firstNeighbor.resize(numPoints + 1, false);
+    deviceData->firstNeighbor.setZero();
+
+    // count neighbors
+
+    kernel_findNeighbors<<<numPoints / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK>>>(*deviceData, positions, stride, true);
+    cudaCheck(cudaGetLastError());
+
+    thrust::device_ptr<int> firstNeighbor(deviceData->firstNeighbor.buffer);
+    thrust::exclusive_scan(firstNeighbor, firstNeighbor + numPoints + 1, firstNeighbor);
+
+    deviceData->firstNeighbor.getDeviceObject(deviceData->numNeighbors, numPoints);
+
+    deviceData->neighbors.resize(deviceData->numNeighbors, false);
+
+    // fill in neighbors
+
+    kernel_findNeighbors<<<numPoints / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK>>>(*deviceData, positions, stride, false);
+    cudaCheck(cudaGetLastError());
+}

@@ -164,6 +164,7 @@ struct BallsDemoDescriptor
 
 struct BallsDeviceData;
 class CudaMeshes;
+class CudaHash;
 
 class BallsDemo : public Demo {
 private:
@@ -189,6 +190,7 @@ private:
     Camera* camera = nullptr;
     std::shared_ptr<BallsDeviceData> deviceData = nullptr;
     std::shared_ptr<CudaMeshes> meshes = nullptr;
+    std::shared_ptr<CudaHash> hash = nullptr;
 
     // Lighting
 

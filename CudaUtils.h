@@ -3,16 +3,24 @@
 #include "Vec.h"
 #include <cuda_runtime.h>
 #include <stdio.h>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
-// CUDA error checking macro
-#define cudaCheck(call)                                                        \
-    do {                                                                       \
-        cudaError_t err = call;                                                \
-        if (err != cudaSuccess) {                                              \
-            fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__,  \
-                    cudaGetErrorString(err));                                  \
-        }                                                                      \
-    } while (0)
+#define cudaCheck(x)                                                                                                   \
+    {                                                                                                                  \
+        cudaAssert((x), __FILE__, __LINE__);                                                                           \
+    }
+inline void cudaAssert(cudaError_t code, const char* file, int line)
+{
+    if (code != cudaSuccess)
+    {
+        std::string errorMsg =
+            std::string("CUDA error: ") + cudaGetErrorString(code) + " at " + file + ":" + std::to_string(line);
+        fprintf(stderr, "%s\n", errorMsg.c_str());
+        throw std::runtime_error(errorMsg);
+    }
+}
 
 #define THREADS_PER_BLOCK 256
 

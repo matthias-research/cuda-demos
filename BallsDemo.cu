@@ -1,6 +1,7 @@
 #include "BallsDemo.h"
 #include "CudaUtils.h"
 #include "CudaMeshes.h"
+#include "CudaHash.h"
 #include "BVH.h"
 #include "Scene.h"
 #include "Mesh.h"
@@ -13,9 +14,6 @@
 #include <cstdio>
 #include <vector>
 
-// Hash grid parameters
-static const int HASH_SIZE = 37000111;  // Prime number for better distribution
-
 static const int VBO_STRIDE = 14;// Interleaved: pos(3), radius(1), color(3), quat(4), pad(3) = 14 floats
 
 // Device data structure - all simulation state on GPU
@@ -27,26 +25,18 @@ struct BallsDeviceData {
         prevPos.free();
         angVel.free();
         radii.free();
-        hashVals.free();
-        hashIds.free();
-        hashCellFirst.free();
-        hashCellLast.free();
         posCorr.free();
         newAngVel.free();
         raycastHit.free();
     }
     
-    size_t allocationSize() const
+    size_t allocationSize() 
     {
         size_t s = 0;
         s += vel.allocationSize();
         s += prevPos.allocationSize();
         s += angVel.allocationSize();
         s += radii.allocationSize();
-        s += hashVals.allocationSize();
-        s += hashIds.allocationSize();
-        s += hashCellFirst.allocationSize();
-        s += hashCellLast.allocationSize();
         s += posCorr.allocationSize();
         s += newAngVel.allocationSize();
         return s;
@@ -63,13 +53,7 @@ struct BallsDeviceData {
     DeviceBuffer<Vec3> prevPos;       // Previous positions (for PBD)
     DeviceBuffer<Vec3> angVel;        // Angular velocities
     DeviceBuffer<float> radii;        // Radius per ball (for variable sizes)
-    
-    // Hash grid
-    DeviceBuffer<int> hashVals;       // Hash value per ball
-    DeviceBuffer<int> hashIds;        // Ball index (gets sorted)
-    DeviceBuffer<int> hashCellFirst;  // First ball in each cell
-    DeviceBuffer<int> hashCellLast;   // Last ball in each cell
-        
+            
     // Collision correction buffers (for symmetric resolution)
     DeviceBuffer<Vec3> posCorr;       // Position corrections
     DeviceBuffer<Vec4> newAngVel;     // New angular velocity accumulation (x,y,z = sum, w = count)
@@ -89,16 +73,6 @@ void deleteBallsDeviceData(BallsDeviceData* data) {
     if (data) {
         delete data;
     }
-}
-
-// Helper device functions
-__device__ inline int hashPosition(const Vec3& pos, float gridSpacing, float worldOrig) {
-    int xi = floorf((pos.x - worldOrig) / gridSpacing);
-    int yi = floorf((pos.y - worldOrig) / gridSpacing);
-    int zi = floorf((pos.z - worldOrig) / gridSpacing);
-    
-    unsigned int h = abs((xi * 92837111) ^ (yi * 689287499) ^ (zi * 283923481)) % HASH_SIZE;
-    return h;
 }
 
 // Integrate - save previous position and predict new position (PBD)
@@ -135,47 +109,9 @@ __global__ void kernel_integrate(BallsDeviceData data, float dt, Vec3 gravity, f
 }
 
 
-// Fill hash values
-__global__ void kernel_fillHash(BallsDeviceData data) {
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (idx >= data.numBalls) return;
-    
-    // Read position from VBO
-    float* ballData = data.vboData + idx * VBO_STRIDE;
-    Vec3 pos(ballData[0], ballData[1], ballData[2]);
-    
-    // Compute hash
-    int h = hashPosition(pos, data.gridSpacing, data.worldOrig);
-    
-    data.hashVals[idx] = h;
-    data.hashIds[idx] = idx;
-}
-
-// Setup hash grid cell boundaries
-__global__ void kernel_setupHash(BallsDeviceData data) {
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (idx >= data.numBalls) return;
-    
-    unsigned int h = data.hashVals[idx];
-    
-    // Find cell boundaries
-    if (idx == 0) {
-        data.hashCellFirst[h] = 0;
-    } else {
-        unsigned int prevH = data.hashVals[idx - 1];
-        if (h != prevH) {
-            data.hashCellFirst[h] = idx;
-            data.hashCellLast[prevH] = idx;
-        }
-    }
-    
-    if (idx == data.numBalls - 1) {
-        data.hashCellLast[h] = data.numBalls;
-    }
-}
 
 // Device function: Handle collision between two balls (symmetric resolution)
-// Only processes if idx < otherIdx to handle each pair once
+
 __device__ inline void handleBallCollision(
     int idx,
     int otherIdx,
@@ -187,7 +123,8 @@ __device__ inline void handleBallCollision(
     BallsDeviceData& data)
 {
     // Only process each pair once (symmetric resolution)
-    if (idx >= otherIdx) return;
+    if (idx >= otherIdx) 
+        return;
     
     // Check collision
     Vec3 delta = otherPos - pos;
@@ -234,8 +171,10 @@ __device__ inline void handleBallCollision(
     }
 }
 
-// Ball-to-ball collision (hash grid)
-__global__ void kernel_ballCollision(BallsDeviceData data, float bounce) {
+// Ball-to-ball collision using hash grid
+
+__global__ void kernel_ballCollision(BallsDeviceData data, HashDeviceData hashData, float bounce) 
+{
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numBalls) return;
     
@@ -243,39 +182,20 @@ __global__ void kernel_ballCollision(BallsDeviceData data, float bounce) {
     float* ballData = data.vboData + idx * VBO_STRIDE;
     Vec3 pos(ballData[0], ballData[1], ballData[2]);
     float radius = ballData[3];
-    
-    // Compute grid cell
-    int xi = floorf((pos.x - data.worldOrig) / data.gridSpacing);
-    int yi = floorf((pos.y - data.worldOrig) / data.gridSpacing);
-    int zi = floorf((pos.z - data.worldOrig) / data.gridSpacing);
-    
-    // Check neighboring cells (3x3x3 = 27 cells)
-    for (int dx = -1; dx <= 1; dx++) {
-        for (int dy = -1; dy <= 1; dy++) {
-            for (int dz = -1; dz <= 1; dz++) {
-                int cellX = xi + dx;
-                int cellY = yi + dy;
-                int cellZ = zi + dz;
-                
-                unsigned int h = abs((cellX * 92837111) ^ (cellY * 689287499) ^ (cellZ * 283923481)) % HASH_SIZE;
-                
-                int first = data.hashCellFirst[h];
-                int last = data.hashCellLast[h];
-                
-                // Check all balls in this cell
-                for (int i = first; i < last; i++) {
-                    int otherIdx = data.hashIds[i];
-                    
-                    // Get other ball data (read from VBO using index)
-                    float* otherData = data.vboData + otherIdx * VBO_STRIDE;
-                    Vec3 otherPos(otherData[0], otherData[1], otherData[2]);
-                    float otherRadius = otherData[3];
-                    
-                    // Handle collision using symmetric resolution
-                    handleBallCollision(idx, otherIdx, pos, radius, otherPos, otherRadius, bounce, data);
-                }
-            }
-        }
+
+    int firstNeighbor = hashData.firstNeighbor[idx];
+    int numNeighbors = hashData.firstNeighbor[idx + 1] - firstNeighbor;
+
+    for (int i = 0; i < numNeighbors; i++) 
+    {
+        int otherIdx = hashData.neighbors[firstNeighbor + i];
+        // Get other ball data (read from VBO using index)
+        float* otherData = data.vboData + otherIdx * VBO_STRIDE;
+        Vec3 otherPos(otherData[0], otherData[1], otherData[2]);
+        float otherRadius = otherData[3];
+        
+        // Handle collision using symmetric resolution
+        handleBallCollision(idx, otherIdx, pos, radius, otherPos, otherRadius, bounce, data);
     }
 }
 
@@ -655,8 +575,11 @@ void BallsDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
         deviceData = std::make_shared<BallsDeviceData>();
     if (!meshes) 
         meshes = std::make_shared<CudaMeshes>();
+    if (!hash) 
+        hash = std::make_shared<CudaHash>();
 
     meshes->initialize(scene);
+    hash->initialize();
     
     deviceData->numBalls = demoDesc.numBalls;
     deviceData->worldOrig = -100.0f;
@@ -670,13 +593,7 @@ void BallsDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
     deviceData->prevPos.resize(demoDesc.numBalls, false);
     deviceData->angVel.resize(demoDesc.numBalls, false);
     deviceData->radii.resize(demoDesc.numBalls, false);
-    
-    // Allocate hash grid using DeviceBuffer
-    deviceData->hashVals.resize(demoDesc.numBalls, false);
-    deviceData->hashIds.resize(demoDesc.numBalls, false);
-    deviceData->hashCellFirst.resize(HASH_SIZE, false);
-    deviceData->hashCellLast.resize(HASH_SIZE, false);
-    
+        
     // Allocate collision correction buffers
     deviceData->posCorr.resize(demoDesc.numBalls, false);
     deviceData->newAngVel.resize(demoDesc.numBalls, false);
@@ -684,8 +601,6 @@ void BallsDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
     // Initialize memory
     deviceData->vel.setZero();
     deviceData->angVel.setZero();
-    deviceData->hashCellFirst.setZero();
-    deviceData->hashCellLast.setZero();
     
     // Register VBO with CUDA
     cudaGraphicsGLRegisterBuffer(vboResource, vbo, cudaGraphicsMapFlagsWriteDiscard);
@@ -759,24 +674,18 @@ void BallsDemo::updateCudaPhysics(float dt,
     // Update VBO pointer
     deviceData->vboData = d_vboData;
     
-    // Hash grid collision detection
-    kernel_fillHash << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData);
-
-    // Sort by hash
-    thrust::device_ptr<int> hashVals(deviceData->hashVals.buffer);
-    thrust::device_ptr<int> hashIds(deviceData->hashIds.buffer);
-    thrust::sort_by_key(hashVals, hashVals + deviceData->numBalls, hashIds);
-
-    deviceData->hashCellFirst.setZero();
-    deviceData->hashCellLast.setZero();
-
-    kernel_setupHash << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData);
+    hash->fillHash(deviceData->numBalls, deviceData->vboData, VBO_STRIDE, deviceData->gridSpacing);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA physics error: %s\n", cudaGetErrorString(err));
+    }
 
     int numSubSteps = 5;
 
     float sdt = dt / (float)numSubSteps;
 
     auto meshesData = meshes->getDeviceData();
+    auto hashData = hash->getDeviceData();
 
     for (int subStep = 0; subStep < numSubSteps; subStep++)
     {
@@ -789,7 +698,12 @@ void BallsDemo::updateCudaPhysics(float dt,
         deviceData->newAngVel.setZero();
 
         // Hash grid collision detection
-        kernel_ballCollision << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, demoDesc.bounce);
+        kernel_ballCollision << <numBlocks, THREADS_PER_BLOCK >> > (*deviceData, *hashData, demoDesc.bounce);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            printf("CUDA physics error: %s\n", cudaGetErrorString(err));
+        }
+
 
         // Apply corrections with relaxation
         const float relaxation = 0.3f;
@@ -817,14 +731,10 @@ void BallsDemo::updateCudaPhysics(float dt,
         meshes->rayCast(deviceData->numBalls, deviceData->vboData, sunRay, deviceData->vboData + 11, VBO_STRIDE);
     }
 
-    // Ensure all CUDA operations complete before unmapping VBO
     cudaDeviceSynchronize();
-
-    // Unmap VBO
     cudaGraphicsUnmapResources(1, &vboResource, 0);
     
-    // Check for errors
-    cudaError_t err = cudaGetLastError();
+    err = cudaGetLastError();
     if (err != cudaSuccess) {
         printf("CUDA physics error: %s\n", cudaGetErrorString(err));
     }
@@ -833,7 +743,6 @@ void BallsDemo::updateCudaPhysics(float dt,
 void BallsDemo::cleanupCudaPhysics(cudaGraphicsResource* vboResource) {
     if (deviceData->numBalls == 0) return;
     
-    // Synchronize CUDA to ensure all operations complete
     cudaDeviceSynchronize();
     
     // Unmap VBO before cleanup if it's mapped
@@ -841,7 +750,6 @@ void BallsDemo::cleanupCudaPhysics(cudaGraphicsResource* vboResource) {
         cudaGraphicsUnmapResources(1, &vboResource, 0);
     }
     
-    // Free all device memory using DeviceBuffer::free()
     if (deviceData) {
 
         deviceData->vboData = nullptr;
@@ -851,13 +759,14 @@ void BallsDemo::cleanupCudaPhysics(cudaGraphicsResource* vboResource) {
     if (meshes) {
         meshes->cleanup();
     }
+    if (hash) {
+        hash->cleanup();
+    }
     
-    // Unregister VBO
     if (vboResource) {
         cudaGraphicsUnregisterResource(vboResource);
     }
     
-    // Final sync to ensure cleanup completes
     cudaDeviceSynchronize();
 }
 

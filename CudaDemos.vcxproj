@@ -126,6 +126,7 @@
     <ClInclude Include="Scene.h" />
     <ClInclude Include="Renderer.h" />
     <ClInclude Include="Skybox.h" />
+    <ClInclude Include="CudaHash.h" />
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="BVH.cu" />
@@ -134,6 +135,7 @@
     <CudaCompile Include="BallsDemo.cu" />
     <CudaCompile Include="FluidDemo.cu" />
     <CudaCompile Include="CudaMeshes.cu" />
+    <CudaCompile Include="CudaHash.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
