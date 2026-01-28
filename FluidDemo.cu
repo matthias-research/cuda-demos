@@ -23,17 +23,22 @@ struct FluidDeviceData {
         vel.free();
         prevPos.free();
         posCorr.free();
+        density.free();
         raycastHit.free();
     }
 
     int numParticles = 0;
     float particleRadius = 0.2f;
+    float kernelRadius = 0.6f;     // SPH kernel support radius (h)
+    float poly6Scale = 0.0f;       // Precomputed: 315 / (64 * π * h^9)
+    float restDensity = 1.0f;      // Target density for uniform particle spacing
     float gridSpacing = 0.5f;
     float worldOrig = -100.0f;
 
     DeviceBuffer<Vec3> vel;
     DeviceBuffer<Vec3> prevPos;
     DeviceBuffer<Vec3> posCorr;
+    DeviceBuffer<float> density;   // Per-particle density estimate
     DeviceBuffer<float> raycastHit;
     
     float* vboData = nullptr;
@@ -63,6 +68,84 @@ __global__ void kernel_integrate(FluidDeviceData data, float dt, Vec3 gravity, f
     particleData[0] = pos.x;
     particleData[1] = pos.y;
     particleData[2] = pos.z;
+}
+
+
+// Poly6 kernel: W(r,h) = poly6Scale * (h² - r²)³ for r ≤ h
+__device__ inline float poly6Kernel(float r2, float h2, float poly6Scale) {
+    if (r2 >= h2) return 0.0f;
+    float diff = h2 - r2;
+    return poly6Scale * diff * diff * diff;
+}
+
+
+// Compute density for each particle using SPH and update color for visualization
+__global__ void kernel_computeDensity(FluidDeviceData data, HashDeviceData hashData) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx >= data.numParticles) return;
+
+    float* particleData = data.vboData + idx * VBO_STRIDE;
+    Vec3 pos(particleData[0], particleData[1], particleData[2]);
+
+    float h = data.kernelRadius;
+    float h2 = h * h;
+    float poly6Scale = data.poly6Scale;
+
+    // Self-contribution: r=0, so (h² - 0)³ = h⁶
+    float density = poly6Scale * h2 * h2 * h2;
+
+    int xi = floorf((pos.x - data.worldOrig) / data.gridSpacing);
+    int yi = floorf((pos.y - data.worldOrig) / data.gridSpacing);
+    int zi = floorf((pos.z - data.worldOrig) / data.gridSpacing);
+
+    // Sum contributions from neighbors
+    for (int dx = -1; dx <= 1; dx++) {
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                unsigned int hash = hashFunction(xi + dx, yi + dy, zi + dz);
+                int first = hashData.hashCellFirst[hash];
+                int last = hashData.hashCellLast[hash];
+
+                for (int i = first; i < last; i++) {
+                    int otherIdx = hashData.hashIds[i];
+                    if (otherIdx == idx) continue;
+
+                    float* otherData = data.vboData + otherIdx * VBO_STRIDE;
+                    Vec3 otherPos(otherData[0], otherData[1], otherData[2]);
+
+                    Vec3 delta = pos - otherPos;
+                    float r2 = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
+
+                    density += poly6Kernel(r2, h2, poly6Scale);
+                }
+            }
+        }
+    }
+
+    data.density[idx] = density;
+
+    // Update color based on density ratio for visualization
+    float ratio = density / data.restDensity;
+    
+    // Map ratio to color: blue (< 1) -> white (1) -> red (> 1)
+    float r, g, b;
+    if (ratio < 1.0f) {
+        // Under-dense: blue to white
+        float t = ratio;  // 0 to 1
+        r = t;
+        g = t;
+        b = 1.0f;
+    } else {
+        // Over-dense: white to red
+        float t = fminf(ratio - 1.0f, 1.0f);  // 0 to 1
+        r = 1.0f;
+        g = 1.0f - t;
+        b = 1.0f - t;
+    }
+    
+    particleData[3] = r;
+    particleData[4] = g;
+    particleData[5] = b;
 }
 
 
@@ -378,12 +461,54 @@ void FluidDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
 
     deviceData->numParticles = demoDesc.numParticles;
     deviceData->particleRadius = demoDesc.particleRadius;
+    deviceData->kernelRadius = demoDesc.kernelRadius;
     deviceData->worldOrig = -100.0f;
-    deviceData->gridSpacing = 2.5f * demoDesc.particleRadius;
+    deviceData->gridSpacing = demoDesc.kernelRadius;  // Grid spacing = kernel radius for neighbor search
+
+    // Precompute Poly6 kernel scale: 315 / (64 * π * h^9)
+    float h = demoDesc.kernelRadius;
+    float h2 = h * h;
+    float h3 = h2 * h;
+    float h6 = h3 * h3;
+    float h9 = h6 * h3;
+    float poly6Scale = 315.0f / (64.0f * 3.14159265f * h9);
+    deviceData->poly6Scale = poly6Scale;
+
+    // Compute rest density analytically based on spawn spacing
+    // Particles spawn on a cubic grid with spacing s = 2 * particleRadius
+    float s = 2.0f * demoDesc.particleRadius;
+    float s2 = s * s;
+    
+    // Self contribution: W(0) = poly6Scale * h^6
+    float restDensity = poly6Scale * h6;
+    
+    // 6 face neighbors at distance s
+    if (s < h) {
+        float diff = h2 - s2;
+        restDensity += 6.0f * poly6Scale * diff * diff * diff;
+    }
+    
+    // 12 edge neighbors at distance s*sqrt(2)
+    float s2_edge = 2.0f * s2;  // (s*sqrt(2))^2 = 2*s^2
+    if (s2_edge < h2) {
+        float diff = h2 - s2_edge;
+        restDensity += 12.0f * poly6Scale * diff * diff * diff;
+    }
+    
+    // 8 corner neighbors at distance s*sqrt(3)
+    float s2_corner = 3.0f * s2;  // (s*sqrt(3))^2 = 3*s^2
+    if (s2_corner < h2) {
+        float diff = h2 - s2_corner;
+        restDensity += 8.0f * poly6Scale * diff * diff * diff;
+    }
+    
+    deviceData->restDensity = restDensity;
+    printf("FluidDemo: kernelRadius=%.3f, spawnSpacing=%.3f, restDensity=%.6f\n", h, s, restDensity);
 
     deviceData->vel.resize(demoDesc.numParticles, false);
     deviceData->prevPos.resize(demoDesc.numParticles, false);
     deviceData->posCorr.resize(demoDesc.numParticles, false);
+    deviceData->density.resize(demoDesc.numParticles, false);
 
     deviceData->vel.setZero();
 
@@ -445,6 +570,9 @@ void FluidDemo::updateCudaPhysics(float dt, cudaGraphicsResource* vboResource) {
         // Integrate
         kernel_integrate<<<numBlocks, THREADS_PER_BLOCK>>>(
             *deviceData, sdt, Vec3(0.0f, -demoDesc.gravity, 0.0f), demoDesc.maxVelocity);
+
+        // Compute density using SPH
+        kernel_computeDensity<<<numBlocks, THREADS_PER_BLOCK>>>(*deviceData, *hashData);
 
         deviceData->posCorr.setZero();
 

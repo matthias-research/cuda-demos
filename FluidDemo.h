@@ -17,6 +17,7 @@ struct FluidDemoDescriptor {
     int numParticles = 100000;
     float gravity = 9.8f;
     float particleRadius = 0.2f;
+    float kernelRadius = 0.6f;   // SPH kernel support radius (h)
     float maxVelocity = 100.0f;
 
     std::string meshName = "";
@@ -38,6 +39,7 @@ struct FluidDemoDescriptor {
         numParticles = 50000;
         gravity = 9.8f;
         particleRadius = 0.3f;
+        kernelRadius = 0.9f;  // Typically 2-4x particle radius
         maxVelocity = 50.0f;
 
         sceneBounds = Bounds3(Vec3(-30.0f, 0.0f, -30.0f), Vec3(30.0f, 80.0f, 30.0f));
