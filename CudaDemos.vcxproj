@@ -130,6 +130,8 @@
     <ClInclude Include="RenderUtils.h" />
     <ClInclude Include="Skybox.h" />
     <ClInclude Include="CudaHash.h" />
+    <ClInclude Include="MarchingCubesSurface.h" />
+    <ClInclude Include="MarchingCubesTable.h" />
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="BVH.cu" />
@@ -139,6 +141,7 @@
     <CudaCompile Include="FluidDemo.cu" />
     <CudaCompile Include="CudaMeshes.cu" />
     <CudaCompile Include="CudaHash.cu" />
+    <CudaCompile Include="MarchingCubesSurface.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

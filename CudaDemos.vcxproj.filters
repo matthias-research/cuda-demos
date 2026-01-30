@@ -77,6 +77,12 @@
     <ClInclude Include="CudaHash.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="MarchingCubesSurface.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MarchingCubesTable.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="BVH.cu">
@@ -92,6 +98,9 @@
       <Filter>CUDA Files</Filter>
     </CudaCompile>
     <CudaCompile Include="CudaHash.cu">
+      <Filter>CUDA Files</Filter>
+    </CudaCompile>
+    <CudaCompile Include="MarchingCubesSurface.cu">
       <Filter>CUDA Files</Filter>
     </CudaCompile>
   </ItemGroup>
