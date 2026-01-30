@@ -35,11 +35,9 @@ struct MarchingCubesSurfaceDeviceData
     void free()
     {
         particlePos.free();
-        sortedParticleIds.free();
         particleCoords.free();
         hashCellFirst.free();
         hashCellLast.free();
-        cubeOfParticle.free();
         cornerDensities.free();
         cornerNormals.free();
         cubeCoords.free();
@@ -68,11 +66,9 @@ struct MarchingCubesSurfaceDeviceData
     int numVertices;
 
     DeviceBuffer<float> particlePos;
-    DeviceBuffer<int> sortedParticleIds; 
     DeviceBuffer<uint64_t> particleCoords;
     DeviceBuffer<int> hashCellFirst;
     DeviceBuffer<int> hashCellLast;
-    DeviceBuffer<int> cubeOfParticle;
     DeviceBuffer<float> cornerDensities;
     DeviceBuffer<Vec3> cornerNormals;
     DeviceBuffer<uint64_t> cubeCoords;
@@ -133,7 +129,6 @@ __global__ void kernel_fillHash(MarchingCubesSurfaceDeviceData data, int numPart
     getPosCoords(pos, data.invGridSpacing, data.worldOrig, xi, yi, zi);
 
     data.particleCoords[pNr] = packCoords(xi, yi, zi);
-    data.sortedParticleIds[pNr] = pNr;
 }
 
 __global__ void kernel_expandActiveVoxels(const uint64_t* occupiedCoords, uint64_t* expandedCoords, int numOccupied) 
@@ -396,7 +391,6 @@ bool MarchingCubesSurface::initialize(int numParticles, float gridSpacing, bool 
     m_deviceData->hashCellFirst.resize(MARCHING_CUBES_HASH_SIZE, false);
     m_deviceData->hashCellLast.resize(MARCHING_CUBES_HASH_SIZE, false);
     m_deviceData->particleCoords.resize(numParticles, false);
-    m_deviceData->sortedParticleIds.resize(numParticles, false);
 
     // Pre-allocate temporary workspace to particle size to avoid per-frame malloc
     m_deviceData->uniqueOccupiedCoords.resize(numParticles, false); 
@@ -428,15 +422,16 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
 
     const float* particles = particlePositions;
     if (!onGpu) {
-        m_deviceData->particlePos.set(particlePositions, numParticles);
+        m_deviceData->particlePos.set(particlePositions, numParticles * stride);
         particles = m_deviceData->particlePos.buffer;
     }
 
     // 1. Fill particle hash and sort
     kernel_fillHash<<<(numParticles + 255) / 256, 256>>>(*m_deviceData, numParticles, particles, stride);
+    cudaCheck(cudaGetLastError());
+    
     thrust::device_ptr<uint64_t> pCoordsPtr(m_deviceData->particleCoords.buffer);
-    thrust::device_ptr<int> sortedIdsPtr(m_deviceData->sortedParticleIds.buffer);
-    thrust::sort_by_key(pCoordsPtr, pCoordsPtr + numParticles, sortedIdsPtr);
+    thrust::sort(pCoordsPtr, pCoordsPtr + numParticles);
 
     // 2. Extract unique occupied voxels
     m_deviceData->uniqueOccupiedCoords.resize(numParticles, false);
@@ -448,6 +443,7 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
     int totalCandidates = numOccupied * 27;
     m_deviceData->expandedCoords.resize(totalCandidates, false);
     kernel_expandActiveVoxels<<<(numOccupied + 255) / 256, 256>>>(m_deviceData->uniqueOccupiedCoords.buffer, m_deviceData->expandedCoords.buffer, numOccupied);
+    cudaCheck(cudaGetLastError());
 
     // 4. Finalize unique active cube list
     thrust::device_ptr<uint64_t> expandedPtr(m_deviceData->expandedCoords.buffer);
@@ -463,6 +459,7 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
     m_deviceData->hashCellFirst.setZero();
     m_deviceData->hashCellLast.setZero();
     kernel_setBoundaries<<<(numActiveCubes + 255) / 256, 256>>>(*m_deviceData, numActiveCubes);
+    cudaCheck(cudaGetLastError());
 
     // 6. Accumulate Density
     m_deviceData->cornerDensities.resize(8 * numActiveCubes, false);
@@ -470,6 +467,7 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
     m_deviceData->cornerNormals.resize(8 * numActiveCubes, false);
     m_deviceData->cornerNormals.setZero();
     kernel_addParticleDensities<<<(numParticles + 255) / 256, 256>>>(*m_deviceData, numParticles, particles, stride);
+    cudaCheck(cudaGetLastError());
 
     // 7. Surface Generation
     m_deviceData->cubeEdgeLinks.resize(12 * numActiveCubes, false);
@@ -480,7 +478,8 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
     m_deviceData->cubeFirstTriId.setZero();
 
     kernel_sumCornerDensitiesAndFindEdgeLinks<<<(numActiveCubes + 255) / 256, 256>>>(*m_deviceData);
-    
+    cudaCheck(cudaGetLastError());
+
     // Scan for triangle and vertex counts
     thrust::device_ptr<int> triScanPtr(m_deviceData->cubeFirstTriId.buffer);
     thrust::exclusive_scan(triScanPtr, triScanPtr + numActiveCubes + 1, triScanPtr);
@@ -495,6 +494,7 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
     if (m_useBufferObjects) {
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_triIdsIbo);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, m_deviceData->numTriIds * sizeof(int), nullptr, GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
         cudaGraphicsMapResources(1, &m_cudaTriIboResource, 0);
         cudaGraphicsResourceGetMappedPointer((void**)&triIndices, nullptr, m_cudaTriIboResource);
     } else {
@@ -503,17 +503,20 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
     }
 
     kernel_createCubeTriangles<<<(numActiveCubes + 255) / 256, 256>>>(*m_deviceData, triIndices);
+    cudaCheck(cudaGetLastError());
     if (m_useBufferObjects) cudaGraphicsUnmapResources(1, &m_cudaTriIboResource, 0);
 
     Vec3 *vertices = nullptr, *normals = nullptr;
     if (m_useBufferObjects) {
         glBindBuffer(GL_ARRAY_BUFFER, m_verticesVbo);
         glBufferData(GL_ARRAY_BUFFER, m_deviceData->numVertices * sizeof(Vec3), nullptr, GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
         cudaGraphicsMapResources(1, &m_cudaVerticesVboResource, 0);
         cudaGraphicsResourceGetMappedPointer((void**)&vertices, nullptr, m_cudaVerticesVboResource);
 
         glBindBuffer(GL_ARRAY_BUFFER, m_normalsVbo);
         glBufferData(GL_ARRAY_BUFFER, m_deviceData->numVertices * sizeof(Vec3), nullptr, GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
         cudaGraphicsMapResources(1, &m_cudaNormalsVboResource, 0);
         cudaGraphicsResourceGetMappedPointer((void**)&normals, nullptr, m_cudaNormalsVboResource);
     } else {
@@ -524,6 +527,7 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
     }
 
     kernel_createVerticesAndNormals<<<(numActiveCubes + 255) / 256, 256>>>(*m_deviceData, vertices, normals);
+    cudaCheck(cudaGetLastError());
     if (m_useBufferObjects) {
         cudaGraphicsUnmapResources(1, &m_cudaVerticesVboResource, 0);
         cudaGraphicsUnmapResources(1, &m_cudaNormalsVboResource, 0);
@@ -549,12 +553,12 @@ int MarchingCubesSurface::getNumTriangles() const { return m_initialized ? m_dev
 
 void MarchingCubesSurface::free()
 {
-    if (m_verticesVbo) glDeleteBuffers(1, &m_verticesVbo);
-    if (m_normalsVbo) glDeleteBuffers(1, &m_normalsVbo);
-    if (m_triIdsIbo) glDeleteBuffers(1, &m_triIdsIbo);
-    if (m_cudaVerticesVboResource) cudaGraphicsUnregisterResource(m_cudaVerticesVboResource);
-    if (m_cudaNormalsVboResource) cudaGraphicsUnregisterResource(m_cudaNormalsVboResource);
-    if (m_cudaTriIboResource) cudaGraphicsUnregisterResource(m_cudaTriIboResource);
+    if (m_cudaVerticesVboResource) { cudaGraphicsUnregisterResource(m_cudaVerticesVboResource); m_cudaVerticesVboResource = nullptr; }
+    if (m_cudaNormalsVboResource) { cudaGraphicsUnregisterResource(m_cudaNormalsVboResource); m_cudaNormalsVboResource = nullptr; }
+    if (m_cudaTriIboResource) { cudaGraphicsUnregisterResource(m_cudaTriIboResource); m_cudaTriIboResource = nullptr; }
+    if (m_verticesVbo) { glDeleteBuffers(1, &m_verticesVbo); m_verticesVbo = 0; }
+    if (m_normalsVbo) { glDeleteBuffers(1, &m_normalsVbo); m_normalsVbo = 0; }
+    if (m_triIdsIbo) { glDeleteBuffers(1, &m_triIdsIbo); m_triIdsIbo = 0; }
     if (m_deviceData) m_deviceData->free();
     m_deviceData = nullptr; m_initialized = false;
 }
