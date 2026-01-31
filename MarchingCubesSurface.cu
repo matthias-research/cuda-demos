@@ -35,50 +35,41 @@ struct MarchingCubesSurfaceDeviceData
     void free()
     {
         particlePos.free();
-        particleCoords.free();
-        hashCellFirst.free();
-        hashCellLast.free();
+        particleCubes.free();
+        cubes.free();
+        hashFirstCube.free();
+        hashLastCube.free();
+        firstExpandedCube.free();
+        neighborBits.free();
         cornerDensities.free();
         cornerNormals.free();
-        cubeCoords.free();
         cubeEdgeLinks.free();
-        cubeFirstTriId.free();
-        edgeVertexNr.free();
-
-        // New persistent buffers to avoid cudaMalloc overhead
-        uniqueOccupiedCoords.free();
-        expandedCoords.free();
-
-        meshVertices.free();
-        meshNormals.free();
-        triIndices.free();
         clear();
     }
 
     int numParticles;
+    int numCubes;
     float gridSpacing;
     float invGridSpacing;
     float worldOrig;
-    int numCubes;
     float restDensity;
     float densityThreshold;
     int numTriIds;
     int numVertices;
 
     DeviceBuffer<float> particlePos;
-    DeviceBuffer<uint64_t> particleCoords;
-    DeviceBuffer<int> hashCellFirst;
-    DeviceBuffer<int> hashCellLast;
+    DeviceBuffer<uint64_t> particleCubes;
+    DeviceBuffer<uint64_t> cubes;
+    DeviceBuffer<int> hashFirstCube;
+    DeviceBuffer<int> hashLastCube;
+    DeviceBuffer<int> firstExpandedCube;
+    DeviceBuffer<int> neighborBits;
+
     DeviceBuffer<float> cornerDensities;
     DeviceBuffer<Vec3> cornerNormals;
-    DeviceBuffer<uint64_t> cubeCoords;
     DeviceBuffer<int> cubeEdgeLinks;
     DeviceBuffer<int> cubeFirstTriId;
     DeviceBuffer<int> edgeVertexNr;
-
-    // Temporary workspace buffers
-    DeviceBuffer<uint64_t> uniqueOccupiedCoords;
-    DeviceBuffer<uint64_t> expandedCoords;
 
     DeviceBuffer<Vec3> meshVertices;
     DeviceBuffer<Vec3> meshNormals;
@@ -117,10 +108,11 @@ __device__ void unpackCoords(uint64_t coord, int& xi, int& yi, int& zi)
     zi = (int)(coord & 0x1FFFFF);
 }
 
-__global__ void kernel_fillHash(MarchingCubesSurfaceDeviceData data, int numParticles, const float* positions, int stride) 
+__global__ void kernel_createParticleCubes(MarchingCubesSurfaceDeviceData data, int numParticles, const float* positions, int stride) 
 {
     int pNr = threadIdx.x + blockIdx.x * blockDim.x;
-    if (pNr >= numParticles) return;
+    if (pNr >= numParticles) 
+        return;
     
     const float* posPtr = positions + pNr * stride;
     Vec3 pos(posPtr[0], posPtr[1], posPtr[2]);
@@ -128,57 +120,123 @@ __global__ void kernel_fillHash(MarchingCubesSurfaceDeviceData data, int numPart
     int xi, yi, zi;
     getPosCoords(pos, data.invGridSpacing, data.worldOrig, xi, yi, zi);
 
-    data.particleCoords[pNr] = packCoords(xi, yi, zi);
+    data.particleCubes[pNr] = packCoords(xi, yi, zi);
 }
 
-__global__ void kernel_expandActiveVoxels(const uint64_t* occupiedCoords, uint64_t* expandedCoords, int numOccupied) 
+
+__global__ void kernel_setHashBoundaries(MarchingCubesSurfaceDeviceData data, bool particleCubes) 
 {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= numOccupied) return;
+    int numCubes = particleCubes ? data.numParticles : data.numCubes;
+  
+    int cubeNr = threadIdx.x + blockIdx.x * blockDim.x;
+    if (cubeNr >= numCubes) 
+        return;
 
-    uint64_t centerCoord = occupiedCoords[idx];
+    uint64_t* cubes = particleCubes ? data.particleCubes.buffer : data.cubes.buffer;
+
     int xi, yi, zi;
-    unpackCoords(centerCoord, xi, yi, zi);
+    unpackCoords(cubes[cubeNr], xi, yi, zi);
+    int h = hashFunction(xi, yi, zi);
 
-    // Expand to 3x3x3 neighborhood (27 cells)
-    for (int z = -1; z <= 1; z++) {
-        for (int y = -1; y <= 1; y++) {
-            for (int x = -1; x <= 1; x++) {
-                int outIdx = idx * 27 + ((z + 1) * 9 + (y + 1) * 3 + (x + 1));
-                expandedCoords[outIdx] = packCoords(xi + x, yi + y, zi + z);
+    if (cubeNr == 0) {
+        data.hashFirstCube[h] = 0;
+    } else {
+        int prevXi, prevYi, prevZi;
+        unpackCoords(cubes[cubeNr - 1], prevXi, prevYi, prevZi);
+        int prevH = hashFunction(prevXi, prevYi, prevZi);
+
+        if (h != prevH) {
+            data.hashFirstCube[h] = cubeNr;
+            data.hashLastCube[prevH] = cubeNr;
+        }
+    }
+    
+    if (cubeNr == numCubes - 1) {
+        data.hashLastCube[h] = numCubes;
+    }
+}
+
+
+__global__ void kernel_findExpandedShell(MarchingCubesSurfaceDeviceData data) 
+{
+    int cubeNr = threadIdx.x + blockIdx.x * blockDim.x;
+    if (cubeNr >= data.numParticles) return;
+
+    // skip duplicates
+    if (cubeNr > 0 && data.particleCubes[cubeNr] == data.particleCubes[cubeNr - 1]) 
+        return;
+
+    int cx, cy, cz;
+    unpackCoords(data.particleCubes[cubeNr], cx, cy, cz);
+
+    // test surrounding cubes
+
+    int numNeighbors = 0;
+    unsigned int neighborBits = 0;
+    int neighborNr = 0;
+
+    for (int xi = cx - 1; xi <= cx + 1; xi++) 
+    {
+        for (int yi = cy - 1; yi <= cy + 1; yi++) 
+        {
+            for (int zi = cz - 1; zi <= cz + 1; zi++) 
+            {
+                int64_t adjCoord = packCoords(xi, yi, zi);
+
+                int adjCubeNr = -1;
+                int h = hashFunction(xi, yi, zi);
+                int first = data.hashFirstCube[h];
+                int last = data.hashLastCube[h];
+
+                for (int j = first; j < last; j++) {
+                    if (data.particleCubes[j] == adjCoord) {
+                        adjCubeNr = j;
+                        break;
+                    }
+                }
+                if (adjCubeNr >= 0) 
+                {
+                    neighborBits |= 1 << neighborNr;
+                    numNeighbors++;
+                }
+                neighborNr++;
+            }
+        }
+    }
+    data.firstExpandedCube[cubeNr] = numNeighbors;
+    data.neighborBits[cubeNr] = neighborBits;
+}
+
+
+__global__ void kernel_createExpandedShell(MarchingCubesSurfaceDeviceData data) 
+{
+    int cubeNr = threadIdx.x + blockIdx.x * blockDim.x;
+    if (cubeNr >= data.numParticles) return;
+
+    int cx, cy, cz;
+    unpackCoords(data.particleCubes[cubeNr], cx, cy, cz);
+    int neighborBits = data.neighborBits[cubeNr];
+
+    int neighborNr = 0;
+    int pos = data.firstExpandedCube[cubeNr];
+
+    for (int xi = cx - 1; xi <= cx + 1; xi++) 
+    {
+        for (int yi = cy - 1; yi <= cy + 1; yi++) 
+        {
+            for (int zi = cz - 1; zi <= cz + 1; zi++) 
+            {
+                if (neighborBits & (1 << neighborNr))
+                {
+                    data.cubes[pos] = packCoords(xi, yi, zi);
+                    pos++;
+                }
+                neighborNr++;
             }
         }
     }
 }
 
-__global__ void kernel_setBoundaries(MarchingCubesSurfaceDeviceData data, int numCubes) 
-{
-    int cubeNr = threadIdx.x + blockIdx.x * blockDim.x;
-    if (cubeNr >= numCubes) return;
-
-    uint64_t coord = data.cubeCoords[cubeNr];
-    int xi, yi, zi;
-    unpackCoords(coord, xi, yi, zi);
-    int h = hashFunction(xi, yi, zi);
-
-    // Standard hash grid start/end pointers for O(1) cube lookup
-    if (cubeNr == 0) {
-        data.hashCellFirst[h] = 0;
-    } else {
-        int prevXi, prevYi, prevZi;
-        unpackCoords(data.cubeCoords[cubeNr - 1], prevXi, prevYi, prevZi);
-        int prevH = hashFunction(prevXi, prevYi, prevZi);
-
-        if (h != prevH) {
-            data.hashCellFirst[h] = cubeNr;
-            data.hashCellLast[prevH] = cubeNr;
-        }
-    }
-    
-    if (cubeNr == numCubes - 1) {
-        data.hashCellLast[h] = numCubes;
-    }
-}
 
 __global__ void kernel_addParticleDensities(MarchingCubesSurfaceDeviceData data, int numParticles, const float* positions, int stride) 
 {
@@ -204,11 +262,11 @@ __global__ void kernel_addParticleDensities(MarchingCubesSurfaceDeviceData data,
                 int adjZi = zi + dz;
 
                 int hash = hashFunction(adjXi, adjYi, adjZi);
-                int first = data.hashCellFirst[hash];
-                int last = data.hashCellLast[hash];
+                int first = data.hashFirstCube[hash];
+                int last = data.hashLastCube[hash];
 
                 for (int j = first; j < last; j++) {
-                    if (data.cubeCoords[j] == packCoords(adjXi, adjYi, adjZi)) {
+                    if (data.cubes[j] == packCoords(adjXi, adjYi, adjZi)) {
                         int cubeNr = j;
                         Vec3 cellOrig = Vec3(adjXi * data.gridSpacing, adjYi * data.gridSpacing, adjZi * data.gridSpacing) + Vec3(data.worldOrig, data.worldOrig, data.worldOrig);
 
@@ -248,7 +306,7 @@ __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDe
     int cubeNr = threadIdx.x + blockIdx.x * blockDim.x;
     if (cubeNr >= data.numCubes) return;
 
-    uint64_t coord = data.cubeCoords[cubeNr];
+    uint64_t coord = data.cubes[cubeNr];
     int xi, yi, zi;
     unpackCoords(coord, xi, yi, zi);
 
@@ -262,8 +320,8 @@ __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDe
 
         int adjCubeNr = -1;
         int h = hashFunction(adjXi, adjYi, adjZi);
-        for (int j = data.hashCellFirst[h]; j < data.hashCellLast[h]; j++) {
-            if (data.cubeCoords[j] == packCoords(adjXi, adjYi, adjZi)) {
+        for (int j = data.hashFirstCube[h]; j < data.hashLastCube[h]; j++) {
+            if (data.cubes[j] == packCoords(adjXi, adjYi, adjZi)) {
                 adjCubeNr = j;
                 break;
             }
@@ -346,7 +404,7 @@ __global__ void kernel_createVerticesAndNormals(MarchingCubesSurfaceDeviceData d
     if (cubeNr >= data.numCubes) return;
 
     int xi, yi, zi;
-    unpackCoords(data.cubeCoords[cubeNr], xi, yi, zi);
+    unpackCoords(data.cubes[cubeNr], xi, yi, zi);
     Vec3 cubeOrig = Vec3(xi * data.gridSpacing, yi * data.gridSpacing, zi * data.gridSpacing) + Vec3(data.worldOrig, data.worldOrig, data.worldOrig);
 
     for (int edgeNr = 0; edgeNr < 12; edgeNr++) {
@@ -388,13 +446,11 @@ bool MarchingCubesSurface::initialize(int numParticles, float gridSpacing, bool 
     m_deviceData->worldOrig = -1000.0f;
     m_deviceData->numParticles = numParticles;
 
-    m_deviceData->hashCellFirst.resize(MARCHING_CUBES_HASH_SIZE, false);
-    m_deviceData->hashCellLast.resize(MARCHING_CUBES_HASH_SIZE, false);
-    m_deviceData->particleCoords.resize(numParticles, false);
-
-    // Pre-allocate temporary workspace to particle size to avoid per-frame malloc
-    m_deviceData->uniqueOccupiedCoords.resize(numParticles, false); 
-    m_deviceData->expandedCoords.resize(numParticles * 27, false);
+    m_deviceData->particleCubes.resize(numParticles, false);
+    m_deviceData->neighborBits.resize(numParticles, false);
+    m_deviceData->hashFirstCube.resize(MARCHING_CUBES_HASH_SIZE, false);
+    m_deviceData->hashLastCube.resize(MARCHING_CUBES_HASH_SIZE, false);
+    m_deviceData->firstExpandedCube.resize(numParticles, false);
 
     if (useBufferObjects) {
         if (m_verticesVbo == 0) {
@@ -426,68 +482,80 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
         particles = m_deviceData->particlePos.buffer;
     }
 
-    // 1. Fill particle hash and sort
-    kernel_fillHash<<<(numParticles + 255) / 256, 256>>>(*m_deviceData, numParticles, particles, stride);
-    cudaCheck(cudaGetLastError());
-    
-    thrust::device_ptr<uint64_t> pCoordsPtr(m_deviceData->particleCoords.buffer);
-    thrust::sort(pCoordsPtr, pCoordsPtr + numParticles);
+    // 1. Create one cube for each particle
 
-    // 2. Extract unique occupied voxels
-    m_deviceData->uniqueOccupiedCoords.resize(numParticles, false);
-    thrust::device_ptr<uint64_t> uniqueOccupiedPtr(m_deviceData->uniqueOccupiedCoords.buffer);
-    auto uniqueEnd = thrust::unique_copy(pCoordsPtr, pCoordsPtr + numParticles, uniqueOccupiedPtr);
-    int numOccupied = uniqueEnd - uniqueOccupiedPtr;
-
-    // 3. Expand to include the neighbor "shell" (Active Cubes)
-    int totalCandidates = numOccupied * 27;
-    m_deviceData->expandedCoords.resize(totalCandidates, false);
-    kernel_expandActiveVoxels<<<(numOccupied + 255) / 256, 256>>>(m_deviceData->uniqueOccupiedCoords.buffer, m_deviceData->expandedCoords.buffer, numOccupied);
+    kernel_createParticleCubes<<<(numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData, numParticles, particles, stride);
     cudaCheck(cudaGetLastError());
 
-    // 4. Finalize unique active cube list
-    thrust::device_ptr<uint64_t> expandedPtr(m_deviceData->expandedCoords.buffer);
-    thrust::sort(expandedPtr, expandedPtr + totalCandidates);
-    auto activeEnd = thrust::unique(expandedPtr, expandedPtr + totalCandidates);
-    int numActiveCubes = activeEnd - expandedPtr;
+    thrust::device_ptr<uint64_t> particleCubesPtr(m_deviceData->particleCubes.buffer);
+    thrust::sort(particleCubesPtr, particleCubesPtr + numParticles);
 
-    m_deviceData->numCubes = numActiveCubes;
-    m_deviceData->cubeCoords.resize(numActiveCubes, false);
-    cudaMemcpy(m_deviceData->cubeCoords.buffer, m_deviceData->expandedCoords.buffer, numActiveCubes * sizeof(uint64_t), cudaMemcpyDeviceToDevice);
+    m_deviceData->hashFirstCube.setZero();
+    m_deviceData->hashLastCube.setZero();
+    kernel_setHashBoundaries<<<(numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData, true);
+    cudaCheck(cudaGetLastError());
 
-    // 5. Setup Hash for Cube Lookup
-    m_deviceData->hashCellFirst.setZero();
-    m_deviceData->hashCellLast.setZero();
-    kernel_setBoundaries<<<(numActiveCubes + 255) / 256, 256>>>(*m_deviceData, numActiveCubes);
+    // 2. Find expanded shell
+
+    m_deviceData->firstExpandedCube.resize(m_deviceData->numParticles + 1, false);
+    m_deviceData->firstExpandedCube.setZero();
+    m_deviceData->neighborBits.resize(m_deviceData->numParticles, false);
+    m_deviceData->neighborBits.setZero();
+    m_deviceData->cubes.resize(numParticles, false);
+
+    kernel_findExpandedShell<<<(m_deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData);
+    cudaCheck(cudaGetLastError());
+
+    thrust::device_ptr<int> firstExpandedCubePtr(m_deviceData->firstExpandedCube.buffer);
+    thrust::exclusive_scan(firstExpandedCubePtr, firstExpandedCubePtr + m_deviceData->numParticles + 1, firstExpandedCubePtr);
+
+    m_deviceData->firstExpandedCube.getDeviceObject(m_deviceData->numCubes, m_deviceData->numParticles);
+
+    // 3. Create expanded shell, then sort and reduce to unique cubes
+
+    m_deviceData->cubes.resize(m_deviceData->numCubes, false);
+    kernel_createExpandedShell<<<(m_deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData);
+    cudaCheck(cudaGetLastError());
+
+    thrust::device_ptr<uint64_t> expandedPtr(m_deviceData->cubes.buffer);
+    thrust::sort(expandedPtr, expandedPtr + m_deviceData->numCubes);
+    auto expandedEnd = thrust::unique(expandedPtr, expandedPtr + m_deviceData->numCubes);
+    m_deviceData->numCubes = expandedEnd - expandedPtr;
+
+    m_deviceData->hashFirstCube.setZero();
+    m_deviceData->hashLastCube.setZero();
+    kernel_setHashBoundaries<<<(m_deviceData->numCubes + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData, false);
     cudaCheck(cudaGetLastError());
 
     // 6. Accumulate Density
-    m_deviceData->cornerDensities.resize(8 * numActiveCubes, false);
+
+    m_deviceData->cornerDensities.resize(8 * m_deviceData->numCubes, false);
     m_deviceData->cornerDensities.setZero();
-    m_deviceData->cornerNormals.resize(8 * numActiveCubes, false);
+    m_deviceData->cornerNormals.resize(8 * m_deviceData->numCubes, false);
     m_deviceData->cornerNormals.setZero();
-    kernel_addParticleDensities<<<(numParticles + 255) / 256, 256>>>(*m_deviceData, numParticles, particles, stride);
+    kernel_addParticleDensities<<<(numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData, numParticles, particles, stride);
     cudaCheck(cudaGetLastError());
 
     // 7. Surface Generation
-    m_deviceData->cubeEdgeLinks.resize(12 * numActiveCubes, false);
+
+    m_deviceData->cubeEdgeLinks.resize(12 * m_deviceData->numCubes, false);
     m_deviceData->cubeEdgeLinks.setZero();
-    m_deviceData->edgeVertexNr.resize(12 * numActiveCubes + 1, false);
+    m_deviceData->edgeVertexNr.resize(12 * m_deviceData->numCubes + 1, false);
     m_deviceData->edgeVertexNr.setZero();
-    m_deviceData->cubeFirstTriId.resize(numActiveCubes + 1, false);
+    m_deviceData->cubeFirstTriId.resize(m_deviceData->numCubes + 1, false);
     m_deviceData->cubeFirstTriId.setZero();
 
-    kernel_sumCornerDensitiesAndFindEdgeLinks<<<(numActiveCubes + 255) / 256, 256>>>(*m_deviceData);
+    kernel_sumCornerDensitiesAndFindEdgeLinks<<<(m_deviceData->numCubes + 255) / 256, 256>>>(*m_deviceData);
     cudaCheck(cudaGetLastError());
 
     // Scan for triangle and vertex counts
     thrust::device_ptr<int> triScanPtr(m_deviceData->cubeFirstTriId.buffer);
-    thrust::exclusive_scan(triScanPtr, triScanPtr + numActiveCubes + 1, triScanPtr);
-    m_deviceData->cubeFirstTriId.getDeviceObject(m_deviceData->numTriIds, numActiveCubes);
+    thrust::exclusive_scan(triScanPtr, triScanPtr + m_deviceData->numCubes + 1, triScanPtr);
+    m_deviceData->cubeFirstTriId.getDeviceObject(m_deviceData->numTriIds, m_deviceData->numCubes);
 
     thrust::device_ptr<int> vertScanPtr(m_deviceData->edgeVertexNr.buffer);
-    thrust::exclusive_scan(vertScanPtr, vertScanPtr + 12 * numActiveCubes + 1, vertScanPtr);
-    m_deviceData->edgeVertexNr.getDeviceObject(m_deviceData->numVertices, 12 * numActiveCubes);
+    thrust::exclusive_scan(vertScanPtr, vertScanPtr + 12 * m_deviceData->numCubes + 1, vertScanPtr);
+    m_deviceData->edgeVertexNr.getDeviceObject(m_deviceData->numVertices, 12 * m_deviceData->numCubes);
 
     // 8. Create Mesh
     int* triIndices = nullptr;
@@ -502,7 +570,7 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
         triIndices = m_deviceData->triIndices.buffer;
     }
 
-    kernel_createCubeTriangles<<<(numActiveCubes + 255) / 256, 256>>>(*m_deviceData, triIndices);
+    kernel_createCubeTriangles<<<(m_deviceData->numCubes + 255) / 256, 256>>>(*m_deviceData, triIndices);
     cudaCheck(cudaGetLastError());
     if (m_useBufferObjects) cudaGraphicsUnmapResources(1, &m_cudaTriIboResource, 0);
 
@@ -526,7 +594,7 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
         normals = m_deviceData->meshNormals.buffer;
     }
 
-    kernel_createVerticesAndNormals<<<(numActiveCubes + 255) / 256, 256>>>(*m_deviceData, vertices, normals);
+    kernel_createVerticesAndNormals<<<(m_deviceData->numCubes + 255) / 256, 256>>>(*m_deviceData, vertices, normals);
     cudaCheck(cudaGetLastError());
     if (m_useBufferObjects) {
         cudaGraphicsUnmapResources(1, &m_cudaVerticesVboResource, 0);

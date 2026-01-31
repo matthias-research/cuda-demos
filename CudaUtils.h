@@ -53,24 +53,25 @@ struct DeviceBuffer
             size = newSize;
             return;
         }
-
-        T* oldBuffer = buffer;
-        size_t oldSize = size;
-
-        cudaCheck(cudaMalloc((void**)&buffer, newSize * sizeof(T)));
-        cudaCheck(cudaMemset(buffer, 0, newSize * sizeof(T)));
-        size = capacity = newSize;
-
-        if (oldBuffer)
+    
+        // Allocate more than needed to avoid frequent reallocs
+        size_t newCapacity = newSize * 2; 
+        T* newBuffer;
+    
+        cudaCheck(cudaMalloc((void**)&newBuffer, newCapacity * sizeof(T)));
+        
+        if (buffer)
         {
             if (preserveData)
-            {
-                cudaCheck(cudaMemcpy(buffer, oldBuffer, oldSize * sizeof(T), cudaMemcpyDeviceToDevice));
-            }
-            cudaCheck(cudaFree(oldBuffer));
+                cudaCheck(cudaMemcpy(newBuffer, buffer, size * sizeof(T), cudaMemcpyDeviceToDevice));
+            cudaCheck(cudaFree(buffer));
         }
+    
+        buffer = newBuffer;
+        size = newSize;
+        capacity = newCapacity;
     }
-
+    
     void setZero()
     {
         if (buffer)
