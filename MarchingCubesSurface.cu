@@ -108,6 +108,23 @@ __device__ void unpackCoords(uint64_t coord, int& xi, int& yi, int& zi)
     zi = (int)(coord & 0x1FFFFF);
 }
 
+// Functor for computing hash from packed coordinates
+struct ComputeHashFunctor
+{
+    __host__ __device__
+    uint32_t operator()(uint64_t coord) const
+    {
+        int xi = (int)(coord >> 42);
+        int yi = (int)((coord >> 21) & 0x1FFFFF);
+        int zi = (int)(coord & 0x1FFFFF);
+        
+        unsigned int uxi = (unsigned int)xi;
+        unsigned int uyi = (unsigned int)yi;
+        unsigned int uzi = (unsigned int)zi;
+        return ((uxi * 92837111u) ^ (uyi * 689287499u) ^ (uzi * 283923481u)) % MARCHING_CUBES_HASH_SIZE;
+    }
+};
+
 __global__ void kernel_createParticleCubes(MarchingCubesSurfaceDeviceData data, int numParticles, const float* positions, int stride) 
 {
     int pNr = threadIdx.x + blockIdx.x * blockDim.x;
@@ -488,7 +505,14 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
     cudaCheck(cudaGetLastError());
 
     thrust::device_ptr<uint64_t> particleCubesPtr(m_deviceData->particleCubes.buffer);
-    thrust::sort(particleCubesPtr, particleCubesPtr + numParticles);
+    
+    // Compute hashes for each cube
+    thrust::device_vector<uint32_t> particleHashes(numParticles);
+    thrust::transform(particleCubesPtr, particleCubesPtr + numParticles, particleHashes.begin(), ComputeHashFunctor());
+    
+    // Combined sort by (hash, coord) - single pass sorts by hash first, then coord within each hash bucket
+    thrust::sort(thrust::make_zip_iterator(thrust::make_tuple(particleHashes.begin(), particleCubesPtr)),
+                 thrust::make_zip_iterator(thrust::make_tuple(particleHashes.end(), particleCubesPtr + numParticles)));
 
     m_deviceData->hashFirstCube.setZero();
     m_deviceData->hashLastCube.setZero();
@@ -518,9 +542,20 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
     cudaCheck(cudaGetLastError());
 
     thrust::device_ptr<uint64_t> expandedPtr(m_deviceData->cubes.buffer);
+    
+    // Sort by coordinates first (groups duplicates for efficient unique)
     thrust::sort(expandedPtr, expandedPtr + m_deviceData->numCubes);
+    
+    // Remove duplicates
     auto expandedEnd = thrust::unique(expandedPtr, expandedPtr + m_deviceData->numCubes);
     m_deviceData->numCubes = expandedEnd - expandedPtr;
+    
+    // Compute hashes for each unique cube
+    thrust::device_vector<uint32_t> cubeHashes(m_deviceData->numCubes);
+    thrust::transform(expandedPtr, expandedPtr + m_deviceData->numCubes, cubeHashes.begin(), ComputeHashFunctor());
+    
+    // Stable sort by hash (preserves coordinate order within hash buckets, groups same-hash cubes together)
+    thrust::stable_sort_by_key(cubeHashes.begin(), cubeHashes.end(), expandedPtr);
 
     m_deviceData->hashFirstCube.setZero();
     m_deviceData->hashLastCube.setZero();
