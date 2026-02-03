@@ -35,8 +35,9 @@ struct MarchingCubesSurfaceDeviceData
     void free()
     {
         particlePos.free();
-        particleCubes.free();
-        cubes.free();
+        particleCubeCoords.free();
+        cubeCoords.free();
+        cubeHashes.free();
         hashFirstCube.free();
         hashLastCube.free();
         firstExpandedCube.free();
@@ -58,8 +59,9 @@ struct MarchingCubesSurfaceDeviceData
     int numVertices;
 
     DeviceBuffer<float> particlePos;
-    DeviceBuffer<uint64_t> particleCubes;
-    DeviceBuffer<uint64_t> cubes;
+    DeviceBuffer<uint64_t> particleCubeCoords;
+    DeviceBuffer<uint64_t> cubeCoords;
+    DeviceBuffer<unsigned int> cubeHashes;
     DeviceBuffer<int> hashFirstCube;
     DeviceBuffer<int> hashLastCube;
     DeviceBuffer<int> firstExpandedCube;
@@ -108,23 +110,6 @@ __device__ void unpackCoords(uint64_t coord, int& xi, int& yi, int& zi)
     zi = (int)(coord & 0x1FFFFF);
 }
 
-// Functor for computing hash from packed coordinates
-struct ComputeHashFunctor
-{
-    __host__ __device__
-    uint32_t operator()(uint64_t coord) const
-    {
-        int xi = (int)(coord >> 42);
-        int yi = (int)((coord >> 21) & 0x1FFFFF);
-        int zi = (int)(coord & 0x1FFFFF);
-        
-        unsigned int uxi = (unsigned int)xi;
-        unsigned int uyi = (unsigned int)yi;
-        unsigned int uzi = (unsigned int)zi;
-        return ((uxi * 92837111u) ^ (uyi * 689287499u) ^ (uzi * 283923481u)) % MARCHING_CUBES_HASH_SIZE;
-    }
-};
-
 __global__ void kernel_createParticleCubes(MarchingCubesSurfaceDeviceData data, int numParticles, const float* positions, int stride) 
 {
     int pNr = threadIdx.x + blockIdx.x * blockDim.x;
@@ -137,7 +122,23 @@ __global__ void kernel_createParticleCubes(MarchingCubesSurfaceDeviceData data, 
     int xi, yi, zi;
     getPosCoords(pos, data.invGridSpacing, data.worldOrig, xi, yi, zi);
 
-    data.particleCubes[pNr] = packCoords(xi, yi, zi);
+    data.particleCubeCoords[pNr] = packCoords(xi, yi, zi);
+
+    unsigned int hash = hashFunction(xi, yi, zi);
+    data.cubeHashes[pNr] = hash;
+}
+
+__global__ void kernel_updateCubeHashes(MarchingCubesSurfaceDeviceData data) 
+{
+    int cubeNr = threadIdx.x + blockIdx.x * blockDim.x;
+    if (cubeNr >= data.numParticles) 
+        return;
+
+    int xi, yi, zi;
+    unpackCoords(data.particleCubeCoords[cubeNr], xi, yi, zi);
+
+    unsigned int hash = hashFunction(xi, yi, zi);
+    data.cubeHashes[cubeNr] = hash;
 }
 
 
@@ -146,21 +147,15 @@ __global__ void kernel_setHashBoundaries(MarchingCubesSurfaceDeviceData data, bo
     int numCubes = particleCubes ? data.numParticles : data.numCubes;
   
     int cubeNr = threadIdx.x + blockIdx.x * blockDim.x;
-    if (cubeNr >= numCubes) 
+    if (cubeNr >= data.cubeHashes.size)
         return;
 
-    uint64_t* cubes = particleCubes ? data.particleCubes.buffer : data.cubes.buffer;
-
-    int xi, yi, zi;
-    unpackCoords(cubes[cubeNr], xi, yi, zi);
-    int h = hashFunction(xi, yi, zi);
+    int h = data.cubeHashes[cubeNr];
 
     if (cubeNr == 0) {
         data.hashFirstCube[h] = 0;
     } else {
-        int prevXi, prevYi, prevZi;
-        unpackCoords(cubes[cubeNr - 1], prevXi, prevYi, prevZi);
-        int prevH = hashFunction(prevXi, prevYi, prevZi);
+        int prevH = data.cubeHashes[cubeNr - 1];
 
         if (h != prevH) {
             data.hashFirstCube[h] = cubeNr;
@@ -180,11 +175,11 @@ __global__ void kernel_findExpandedShell(MarchingCubesSurfaceDeviceData data)
     if (cubeNr >= data.numParticles) return;
 
     // skip duplicates
-    if (cubeNr > 0 && data.particleCubes[cubeNr] == data.particleCubes[cubeNr - 1]) 
+    if (cubeNr > 0 && data.particleCubeCoords[cubeNr] == data.particleCubeCoords[cubeNr - 1]) 
         return;
 
     int cx, cy, cz;
-    unpackCoords(data.particleCubes[cubeNr], cx, cy, cz);
+    unpackCoords(data.particleCubeCoords[cubeNr], cx, cy, cz);
 
     // test surrounding cubes
 
@@ -206,7 +201,7 @@ __global__ void kernel_findExpandedShell(MarchingCubesSurfaceDeviceData data)
                 int last = data.hashLastCube[h];
 
                 for (int j = first; j < last; j++) {
-                    if (data.particleCubes[j] == adjCoord) {
+                    if (data.particleCubeCoords[j] == adjCoord) {
                         adjCubeNr = j;
                         break;
                     }
@@ -231,7 +226,7 @@ __global__ void kernel_createExpandedShell(MarchingCubesSurfaceDeviceData data)
     if (cubeNr >= data.numParticles) return;
 
     int cx, cy, cz;
-    unpackCoords(data.particleCubes[cubeNr], cx, cy, cz);
+    unpackCoords(data.particleCubeCoords[cubeNr], cx, cy, cz);
     int neighborBits = data.neighborBits[cubeNr];
 
     int neighborNr = 0;
@@ -245,7 +240,8 @@ __global__ void kernel_createExpandedShell(MarchingCubesSurfaceDeviceData data)
             {
                 if (neighborBits & (1 << neighborNr))
                 {
-                    data.cubes[pos] = packCoords(xi, yi, zi);
+                    data.cubeCoords[pos] = packCoords(xi, yi, zi);
+                    data.cubeHashes[pos] = hashFunction(xi, yi, zi);
                     pos++;
                 }
                 neighborNr++;
@@ -257,77 +253,76 @@ __global__ void kernel_createExpandedShell(MarchingCubesSurfaceDeviceData data)
 
 __global__ void kernel_addParticleDensities(MarchingCubesSurfaceDeviceData data, int numParticles, const float* positions, int stride) 
 {
+    // we assume the kernel radius sim smaller than the grid spacing
+    // therefore we only need update one cube, the cube that contains the particle
+
     int pNr = threadIdx.x + blockIdx.x * blockDim.x;
     if (pNr >= numParticles) return;
 
     const float* posPtr = positions + pNr * stride;
     Vec3 pos(posPtr[0], posPtr[1], posPtr[2]);
 
-    int xi, yi, zi;
-    getPosCoords(pos, data.invGridSpacing, data.worldOrig, xi, yi, zi);
-
     float h_rad = 1.5f * data.gridSpacing;
     float h2 = h_rad * h_rad;
     float kernelScale = 315.0f / (64.0f * 3.14159265f * h2 * h2 * h2 * h2 * h_rad) / data.restDensity;
 
-    // Particles must check all neighbor cubes (expanded shell) to add density to corners
-    for (int dz = -1; dz <= 1; dz++) {
-        for (int dy = -1; dy <= 1; dy++) {
-            for (int dx = -1; dx <= 1; dx++) {
-                int adjXi = xi + dx;
-                int adjYi = yi + dy;
-                int adjZi = zi + dz;
+    int xi, yi, zi;
+    getPosCoords(pos, data.invGridSpacing, data.worldOrig, xi, yi, zi);
 
-                int hash = hashFunction(adjXi, adjYi, adjZi);
-                int first = data.hashFirstCube[hash];
-                int last = data.hashLastCube[hash];
+    int hash = hashFunction(xi, yi, zi);
+    int first = data.hashFirstCube[hash];
+    int last = data.hashLastCube[hash];
 
-                for (int j = first; j < last; j++) {
-                    if (data.cubes[j] == packCoords(adjXi, adjYi, adjZi)) {
-                        int cubeNr = j;
-                        Vec3 cellOrig = Vec3(adjXi * data.gridSpacing, adjYi * data.gridSpacing, adjZi * data.gridSpacing) + Vec3(data.worldOrig, data.worldOrig, data.worldOrig);
+    int cubeNr = -1;
+    uint64_t cubeCoord = packCoords(xi, yi, zi);
 
-                        for (int i = 0; i < 8; i++) {
-                            int* cornerCoords = marchingCubeCorners[i];
-                            Vec3 cornerPos = cellOrig + Vec3((float)cornerCoords[0], (float)cornerCoords[1], (float)cornerCoords[2]) * data.gridSpacing;
+    for (int i = first; i < last; i++) 
+    {
+        if (data.cubeCoords[i] == cubeCoord) 
+        {
+            cubeNr = i;
+            break;
+        }
+    }
 
-                            Vec3 r = pos - cornerPos;
-                            float r2 = r.magnitudeSquared();
+    if (cubeNr < 0) return;
 
-                            if (r2 < h2) {
-                                float w = (h2 - r2);
-                                w = kernelScale * w * w * w;
-                                atomicAdd(&data.cornerDensities[8 * cubeNr + i], w);
-                                float rLen = sqrtf(r2);
-                                if (rLen > 1e-8f) {
-                                    r *= (-w / rLen);
-                                    atomicAdd(&data.cornerNormals[8 * cubeNr + i].x, r.x);
-                                    atomicAdd(&data.cornerNormals[8 * cubeNr + i].y, r.y);
-                                    atomicAdd(&data.cornerNormals[8 * cubeNr + i].z, r.z);
-                                }
-                            }
-                        }
-                        break;
-                    }
-                }
+    Vec3 cellOrig = Vec3(xi * data.gridSpacing, yi * data.gridSpacing, zi * data.gridSpacing) + Vec3(data.worldOrig, data.worldOrig, data.worldOrig);
+
+    for (int i = 0; i < 8; i++) {
+        int* cornerCoords = marchingCubeCorners[i];
+        Vec3 cornerPos = cellOrig + Vec3((float)cornerCoords[0], (float)cornerCoords[1], (float)cornerCoords[2]) * data.gridSpacing;
+
+        Vec3 r = pos - cornerPos;
+        float r2 = r.magnitudeSquared();
+
+        if (r2 < h2) {
+            float w = (h2 - r2);
+            w = kernelScale * w * w * w;
+            atomicAdd(&data.cornerDensities[8 * cubeNr + i], w);
+            float rLen = sqrtf(r2);
+            if (rLen > 1e-8f) {
+                r *= (-w / rLen);
+                atomicAdd(&data.cornerNormals[8 * cubeNr + i].x, r.x);
+                atomicAdd(&data.cornerNormals[8 * cubeNr + i].y, r.y);
+                atomicAdd(&data.cornerNormals[8 * cubeNr + i].z, r.z);
             }
         }
     }
 }
 
-// ... [Existing: kernel_sumCornerDensitiesAndFindEdgeLinks, kernel_createCubeTriangles, kernel_createVerticesAndNormals] ...
-// Note: These kernels remain largely the same, but now operate on data.numCubes (the expanded shell).
 
 __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDeviceData data) 
 {
     int cubeNr = threadIdx.x + blockIdx.x * blockDim.x;
     if (cubeNr >= data.numCubes) return;
 
-    uint64_t coord = data.cubes[cubeNr];
+    uint64_t coord = data.cubeCoords[cubeNr];
     int xi, yi, zi;
     unpackCoords(coord, xi, yi, zi);
 
     int adjCubes[27];
+
     for (int i = 0; i < 27; i++) {
         if (i == 13) { adjCubes[i] = -1; continue; }
 
@@ -338,7 +333,7 @@ __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDe
         int adjCubeNr = -1;
         int h = hashFunction(adjXi, adjYi, adjZi);
         for (int j = data.hashFirstCube[h]; j < data.hashLastCube[h]; j++) {
-            if (data.cubes[j] == packCoords(adjXi, adjYi, adjZi)) {
+            if (data.cubeCoords[j] == packCoords(adjXi, adjYi, adjZi)) {
                 adjCubeNr = j;
                 break;
             }
@@ -347,6 +342,7 @@ __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDe
     }
 
     int marchingCubesCode = 0;
+
     for (int cornerNr = 0; cornerNr < 8; cornerNr++) {
         float density = data.cornerDensities[8 * cubeNr + cornerNr];
         Vec3 normal = data.cornerNormals[8 * cubeNr + cornerNr];
@@ -362,22 +358,27 @@ __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDe
 
         data.cornerDensities[8 * cubeNr + cornerNr] = density;
         data.cornerNormals[8 * cubeNr + cornerNr] = normal;
-        if (density > data.densityThreshold) marchingCubesCode |= 1 << cornerNr;
+        if (density > data.densityThreshold) 
+            marchingCubesCode |= 1 << cornerNr;
     }
 
-    data.cubeFirstTriId[cubeNr] = firstMarchingCubesId[marchingCubesCode + 1] - firstMarchingCubesId[marchingCubesCode];
+    int numCubeIds = firstMarchingCubesId[marchingCubesCode + 1] - firstMarchingCubesId[marchingCubesCode];
+
+    data.cubeFirstTriId[cubeNr] = numCubeIds;
 
     for (int edgeNr = 0; edgeNr < 12; edgeNr++) {
         bool smallest = true;
         for (int i = 0; i < 4; i++) {
             int adjCubeNr = adjCubes[edgeAdjCellNr[edgeNr][i]];
-            if (adjCubeNr >= 0 && adjCubeNr < cubeNr) smallest = false;
+            if (adjCubeNr >= 0 && adjCubeNr < cubeNr) 
+                smallest = false;
         }
 
         if (smallest) {
             for (int i = 0; i < 4; i++) {
                 int adjCubeNr = adjCubes[edgeAdjCellNr[edgeNr][i]];
-                if (adjCubeNr >= 0) data.cubeEdgeLinks[12 * adjCubeNr + edgeAdjEdgeNr[edgeNr][i]] = 12 * cubeNr + edgeNr;
+                if (adjCubeNr >= 0) 
+                    data.cubeEdgeLinks[12 * adjCubeNr + edgeAdjEdgeNr[edgeNr][i]] = 12 * cubeNr + edgeNr;
             }
             data.cubeEdgeLinks[12 * cubeNr + edgeNr] = -1;
 
@@ -421,7 +422,7 @@ __global__ void kernel_createVerticesAndNormals(MarchingCubesSurfaceDeviceData d
     if (cubeNr >= data.numCubes) return;
 
     int xi, yi, zi;
-    unpackCoords(data.cubes[cubeNr], xi, yi, zi);
+    unpackCoords(data.cubeCoords[cubeNr], xi, yi, zi);
     Vec3 cubeOrig = Vec3(xi * data.gridSpacing, yi * data.gridSpacing, zi * data.gridSpacing) + Vec3(data.worldOrig, data.worldOrig, data.worldOrig);
 
     for (int edgeNr = 0; edgeNr < 12; edgeNr++) {
@@ -463,7 +464,8 @@ bool MarchingCubesSurface::initialize(int numParticles, float gridSpacing, bool 
     m_deviceData->worldOrig = -1000.0f;
     m_deviceData->numParticles = numParticles;
 
-    m_deviceData->particleCubes.resize(numParticles, false);
+    m_deviceData->particleCubeCoords.resize(numParticles, false);
+    m_deviceData->cubeHashes.resize(numParticles, false);
     m_deviceData->neighborBits.resize(numParticles, false);
     m_deviceData->hashFirstCube.resize(MARCHING_CUBES_HASH_SIZE, false);
     m_deviceData->hashLastCube.resize(MARCHING_CUBES_HASH_SIZE, false);
@@ -489,6 +491,22 @@ bool MarchingCubesSurface::initialize(int numParticles, float gridSpacing, bool 
     return true;
 }   
 
+
+void sortCubes(uint64_t* coords, unsigned int* hashes, int num) 
+{
+    // Combined sort by (hash, coord) - single pass sorts by hash first, then coord within each hash bucket
+
+    thrust::device_ptr<uint64_t> coordsPtr(coords);
+    thrust::device_ptr<unsigned int> hashesPtr(hashes);
+
+    auto zip_start = thrust::make_zip_iterator(thrust::make_tuple(hashesPtr, coordsPtr));
+    auto zip_end = thrust::make_zip_iterator(thrust::make_tuple(hashesPtr + num, coordsPtr + num));
+    thrust::sort(zip_start, zip_end);
+
+    cudaCheck(cudaGetLastError());
+}
+
+
 bool MarchingCubesSurface::update(int numParticles, const float* particlePositions, int stride, bool onGpu)
 {
     if (!m_deviceData || !m_initialized || m_deviceData->numParticles != numParticles) return false;
@@ -499,33 +517,28 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
         particles = m_deviceData->particlePos.buffer;
     }
 
-    // 1. Create one cube for each particle
+    // Create one cube for each particle
+
+    m_deviceData->cubeHashes.resize(numParticles, false);
 
     kernel_createParticleCubes<<<(numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData, numParticles, particles, stride);
     cudaCheck(cudaGetLastError());
 
-    thrust::device_ptr<uint64_t> particleCubesPtr(m_deviceData->particleCubes.buffer);
-    
-    // Compute hashes for each cube
-    thrust::device_vector<uint32_t> particleHashes(numParticles);
-    thrust::transform(particleCubesPtr, particleCubesPtr + numParticles, particleHashes.begin(), ComputeHashFunctor());
-    
-    // Combined sort by (hash, coord) - single pass sorts by hash first, then coord within each hash bucket
-    thrust::sort(thrust::make_zip_iterator(thrust::make_tuple(particleHashes.begin(), particleCubesPtr)),
-                 thrust::make_zip_iterator(thrust::make_tuple(particleHashes.end(), particleCubesPtr + numParticles)));
+    // Create acceleration structure for particles cubes
+
+    sortCubes(m_deviceData->particleCubeCoords.buffer, m_deviceData->cubeHashes.buffer, numParticles);
 
     m_deviceData->hashFirstCube.setZero();
     m_deviceData->hashLastCube.setZero();
     kernel_setHashBoundaries<<<(numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData, true);
     cudaCheck(cudaGetLastError());
 
-    // 2. Find expanded shell
+    // Find expanded shell
 
     m_deviceData->firstExpandedCube.resize(m_deviceData->numParticles + 1, false);
     m_deviceData->firstExpandedCube.setZero();
     m_deviceData->neighborBits.resize(m_deviceData->numParticles, false);
     m_deviceData->neighborBits.setZero();
-    m_deviceData->cubes.resize(numParticles, false);
 
     kernel_findExpandedShell<<<(m_deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData);
     cudaCheck(cudaGetLastError());
@@ -535,34 +548,29 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
 
     m_deviceData->firstExpandedCube.getDeviceObject(m_deviceData->numCubes, m_deviceData->numParticles);
 
-    // 3. Create expanded shell, then sort and reduce to unique cubes
+    // Create expanded shell, then sort and reduce to unique cubes
 
-    m_deviceData->cubes.resize(m_deviceData->numCubes, false);
+    m_deviceData->cubeCoords.resize(m_deviceData->numCubes, false);
+    m_deviceData->cubeHashes.resize(m_deviceData->numCubes, false);
+
     kernel_createExpandedShell<<<(m_deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData);
     cudaCheck(cudaGetLastError());
 
-    thrust::device_ptr<uint64_t> expandedPtr(m_deviceData->cubes.buffer);
-    
-    // Sort by coordinates first (groups duplicates for efficient unique)
-    thrust::sort(expandedPtr, expandedPtr + m_deviceData->numCubes);
-    
+    sortCubes(m_deviceData->cubeCoords.buffer, m_deviceData->cubeHashes.buffer, m_deviceData->numCubes);
+        
     // Remove duplicates
-    auto expandedEnd = thrust::unique(expandedPtr, expandedPtr + m_deviceData->numCubes);
-    m_deviceData->numCubes = expandedEnd - expandedPtr;
-    
-    // Compute hashes for each unique cube
-    thrust::device_vector<uint32_t> cubeHashes(m_deviceData->numCubes);
-    thrust::transform(expandedPtr, expandedPtr + m_deviceData->numCubes, cubeHashes.begin(), ComputeHashFunctor());
-    
-    // Stable sort by hash (preserves coordinate order within hash buckets, groups same-hash cubes together)
-    thrust::stable_sort_by_key(cubeHashes.begin(), cubeHashes.end(), expandedPtr);
 
+    auto expandedEnd = thrust::unique(m_deviceData->cubeCoords.buffer, m_deviceData->cubeCoords.buffer + m_deviceData->numCubes);
+    m_deviceData->numCubes = expandedEnd - m_deviceData->cubeCoords.buffer;
+
+    kernel_updateCubeHashes<<<(m_deviceData->numCubes + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData);
+    
     m_deviceData->hashFirstCube.setZero();
     m_deviceData->hashLastCube.setZero();
     kernel_setHashBoundaries<<<(m_deviceData->numCubes + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData, false);
     cudaCheck(cudaGetLastError());
 
-    // 6. Accumulate Density
+    // Accumulate Density
 
     m_deviceData->cornerDensities.resize(8 * m_deviceData->numCubes, false);
     m_deviceData->cornerDensities.setZero();
@@ -571,7 +579,7 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
     kernel_addParticleDensities<<<(numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData, numParticles, particles, stride);
     cudaCheck(cudaGetLastError());
 
-    // 7. Surface Generation
+    // Surface Generation
 
     m_deviceData->cubeEdgeLinks.resize(12 * m_deviceData->numCubes, false);
     m_deviceData->cubeEdgeLinks.setZero();
@@ -580,7 +588,7 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
     m_deviceData->cubeFirstTriId.resize(m_deviceData->numCubes + 1, false);
     m_deviceData->cubeFirstTriId.setZero();
 
-    kernel_sumCornerDensitiesAndFindEdgeLinks<<<(m_deviceData->numCubes + 255) / 256, 256>>>(*m_deviceData);
+    kernel_sumCornerDensitiesAndFindEdgeLinks<<<(m_deviceData->numCubes + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData);
     cudaCheck(cudaGetLastError());
 
     // Scan for triangle and vertex counts
@@ -605,7 +613,7 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
         triIndices = m_deviceData->triIndices.buffer;
     }
 
-    kernel_createCubeTriangles<<<(m_deviceData->numCubes + 255) / 256, 256>>>(*m_deviceData, triIndices);
+    kernel_createCubeTriangles<<<(m_deviceData->numCubes + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData, triIndices);
     cudaCheck(cudaGetLastError());
     if (m_useBufferObjects) cudaGraphicsUnmapResources(1, &m_cudaTriIboResource, 0);
 
@@ -629,7 +637,7 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
         normals = m_deviceData->meshNormals.buffer;
     }
 
-    kernel_createVerticesAndNormals<<<(m_deviceData->numCubes + 255) / 256, 256>>>(*m_deviceData, vertices, normals);
+    kernel_createVerticesAndNormals<<<(m_deviceData->numCubes + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData, vertices, normals);
     cudaCheck(cudaGetLastError());
     if (m_useBufferObjects) {
         cudaGraphicsUnmapResources(1, &m_cudaVerticesVboResource, 0);
@@ -639,7 +647,6 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
     return true;
 }
 
-// ... [Existing: readBackMesh, getNumVertices, getNumTriangles, free] ...
 
 void MarchingCubesSurface::readBackMesh()
 {
