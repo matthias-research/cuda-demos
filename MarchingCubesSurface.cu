@@ -152,18 +152,23 @@ __global__ void kernel_setHashBoundaries(MarchingCubesSurfaceDeviceData data, bo
 
     int h = data.cubeHashes[cubeNr];
 
-    if (cubeNr == 0) {
+    if (cubeNr == 0) 
+    {
         data.hashFirstCube[h] = 0;
-    } else {
+    } 
+    else 
+    {
         int prevH = data.cubeHashes[cubeNr - 1];
 
-        if (h != prevH) {
+        if (h != prevH) 
+        {
             data.hashFirstCube[h] = cubeNr;
             data.hashLastCube[prevH] = cubeNr;
         }
     }
     
-    if (cubeNr == numCubes - 1) {
+    if (cubeNr == numCubes - 1) 
+    {
         data.hashLastCube[h] = numCubes;
     }
 }
@@ -200,8 +205,10 @@ __global__ void kernel_findExpandedShell(MarchingCubesSurfaceDeviceData data)
                 int first = data.hashFirstCube[h];
                 int last = data.hashLastCube[h];
 
-                for (int j = first; j < last; j++) {
-                    if (data.particleCubeCoords[j] == adjCoord) {
+                for (int j = first; j < last; j++) 
+                {
+                    if (data.particleCubeCoords[j] == adjCoord) 
+                    {
                         adjCubeNr = j;
                         break;
                     }
@@ -223,7 +230,8 @@ __global__ void kernel_findExpandedShell(MarchingCubesSurfaceDeviceData data)
 __global__ void kernel_createExpandedShell(MarchingCubesSurfaceDeviceData data) 
 {
     int cubeNr = threadIdx.x + blockIdx.x * blockDim.x;
-    if (cubeNr >= data.numParticles) return;
+    if (cubeNr >= data.numParticles) 
+        return;
 
     int cx, cy, cz;
     unpackCoords(data.particleCubeCoords[cubeNr], cx, cy, cz);
@@ -238,7 +246,7 @@ __global__ void kernel_createExpandedShell(MarchingCubesSurfaceDeviceData data)
         {
             for (int zi = cz - 1; zi <= cz + 1; zi++) 
             {
-                if (neighborBits & (1 << neighborNr))
+                if (neighborBits & (1 << neighborNr)) 
                 {
                     data.cubeCoords[pos] = packCoords(xi, yi, zi);
                     data.cubeHashes[pos] = hashFunction(xi, yi, zi);
@@ -257,7 +265,8 @@ __global__ void kernel_addParticleDensities(MarchingCubesSurfaceDeviceData data,
     // therefore we only need update one cube, the cube that contains the particle
 
     int pNr = threadIdx.x + blockIdx.x * blockDim.x;
-    if (pNr >= numParticles) return;
+    if (pNr >= numParticles) 
+        return;
 
     const float* posPtr = positions + pNr * stride;
     Vec3 pos(posPtr[0], posPtr[1], posPtr[2]);
@@ -289,19 +298,22 @@ __global__ void kernel_addParticleDensities(MarchingCubesSurfaceDeviceData data,
 
     Vec3 cellOrig = Vec3(xi * data.gridSpacing, yi * data.gridSpacing, zi * data.gridSpacing) + Vec3(data.worldOrig, data.worldOrig, data.worldOrig);
 
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 8; i++) 
+    {
         int* cornerCoords = marchingCubeCorners[i];
         Vec3 cornerPos = cellOrig + Vec3((float)cornerCoords[0], (float)cornerCoords[1], (float)cornerCoords[2]) * data.gridSpacing;
 
         Vec3 r = pos - cornerPos;
         float r2 = r.magnitudeSquared();
 
-        if (r2 < h2) {
+        if (r2 < h2) 
+        {
             float w = (h2 - r2);
             w = kernelScale * w * w * w;
             atomicAdd(&data.cornerDensities[8 * cubeNr + i], w);
             float rLen = sqrtf(r2);
-            if (rLen > 1e-8f) {
+            if (rLen > 1e-8f) 
+            {
                 r *= (-w / rLen);
                 atomicAdd(&data.cornerNormals[8 * cubeNr + i].x, r.x);
                 atomicAdd(&data.cornerNormals[8 * cubeNr + i].y, r.y);
@@ -315,7 +327,8 @@ __global__ void kernel_addParticleDensities(MarchingCubesSurfaceDeviceData data,
 __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDeviceData data) 
 {
     int cubeNr = threadIdx.x + blockIdx.x * blockDim.x;
-    if (cubeNr >= data.numCubes) return;
+    if (cubeNr >= data.numCubes) 
+        return;
 
     uint64_t coord = data.cubeCoords[cubeNr];
     int xi, yi, zi;
@@ -323,8 +336,13 @@ __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDe
 
     int adjCubes[27];
 
-    for (int i = 0; i < 27; i++) {
-        if (i == 13) { adjCubes[i] = -1; continue; }
+    for (int i = 0; i < 27; i++) 
+    {
+        if (i == 13) 
+        { 
+            adjCubes[i] = -1; 
+            continue; 
+        }
 
         int adjXi = xi + (i % 3) - 1;
         int adjYi = yi + ((i / 3) % 3) - 1;
@@ -332,8 +350,10 @@ __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDe
 
         int adjCubeNr = -1;
         int h = hashFunction(adjXi, adjYi, adjZi);
-        for (int j = data.hashFirstCube[h]; j < data.hashLastCube[h]; j++) {
-            if (data.cubeCoords[j] == packCoords(adjXi, adjYi, adjZi)) {
+        for (int j = data.hashFirstCube[h]; j < data.hashLastCube[h]; j++) 
+        {
+            if (data.cubeCoords[j] == packCoords(adjXi, adjYi, adjZi)) 
+            {
                 adjCubeNr = j;
                 break;
             }
@@ -343,13 +363,16 @@ __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDe
 
     int marchingCubesCode = 0;
 
-    for (int cornerNr = 0; cornerNr < 8; cornerNr++) {
+    for (int cornerNr = 0; cornerNr < 8; cornerNr++) 
+    {
         float density = data.cornerDensities[8 * cubeNr + cornerNr];
         Vec3 normal = data.cornerNormals[8 * cubeNr + cornerNr];
 
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < 8; i++) 
+        {   
             int adjCubeNr = adjCubes[cornerAdjCellNr[cornerNr][i]];
-            if (adjCubeNr < 0) continue;
+            if (adjCubeNr < 0) 
+                continue;
 
             int adjCornerNr = cornerAdjCornerNr[cornerNr][i];
             density += data.cornerDensities[8 * adjCubeNr + adjCornerNr];
@@ -359,23 +382,29 @@ __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDe
         data.cornerDensities[8 * cubeNr + cornerNr] = density;
         data.cornerNormals[8 * cubeNr + cornerNr] = normal;
         if (density > data.densityThreshold) 
+        {
             marchingCubesCode |= 1 << cornerNr;
+        }
     }
 
     int numCubeIds = firstMarchingCubesId[marchingCubesCode + 1] - firstMarchingCubesId[marchingCubesCode];
 
     data.cubeFirstTriId[cubeNr] = numCubeIds;
 
-    for (int edgeNr = 0; edgeNr < 12; edgeNr++) {
+    for (int edgeNr = 0; edgeNr < 12; edgeNr++) 
+    {
         bool smallest = true;
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 4; i++) 
+        {
             int adjCubeNr = adjCubes[edgeAdjCellNr[edgeNr][i]];
             if (adjCubeNr >= 0 && adjCubeNr < cubeNr) 
                 smallest = false;
         }
 
-        if (smallest) {
-            for (int i = 0; i < 4; i++) {
+        if (smallest) 
+        {
+            for (int i = 0; i < 4; i++) 
+            {
                 int adjCubeNr = adjCubes[edgeAdjCellNr[edgeNr][i]];
                 if (adjCubeNr >= 0) 
                     data.cubeEdgeLinks[12 * adjCubeNr + edgeAdjEdgeNr[edgeNr][i]] = 12 * cubeNr + edgeNr;
@@ -384,7 +413,8 @@ __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDe
 
             float d0 = data.cornerDensities[8 * cubeNr + marchingCubeEdges[edgeNr][0]];
             float d1 = data.cornerDensities[8 * cubeNr + marchingCubeEdges[edgeNr][1]];
-            if ((d0 <= data.densityThreshold && d1 > data.densityThreshold) || (d0 > data.densityThreshold && d1 <= data.densityThreshold)) {
+            if ((d0 <= data.densityThreshold && d1 > data.densityThreshold) || (d0 > data.densityThreshold && d1 <= data.densityThreshold)) 
+            {
                 data.edgeVertexNr[12 * cubeNr + edgeNr] = 1;
             }
         }
@@ -394,24 +424,30 @@ __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDe
 __global__ void kernel_createCubeTriangles(MarchingCubesSurfaceDeviceData data, int* triIndices) 
 {
     int cubeNr = threadIdx.x + blockIdx.x * blockDim.x;
-    if (cubeNr >= data.numCubes) return;
+    if (cubeNr >= data.numCubes)
+        return;
 
     int edgeVertexId[12];
-    for (int edgeNr = 0; edgeNr < 12; edgeNr++) {
+    for (int edgeNr = 0; edgeNr < 12; edgeNr++) 
+    {
         int link = data.cubeEdgeLinks[12 * cubeNr + edgeNr];
         edgeVertexId[edgeNr] = data.edgeVertexNr[link < 0 ? 12 * cubeNr + edgeNr : link];
     }
 
     int marchingCubesCode = 0;
-    for (int cornerNr = 0; cornerNr < 8; cornerNr++) {
-        if (data.cornerDensities[8 * cubeNr + cornerNr] > data.densityThreshold) marchingCubesCode |= 1 << cornerNr;
+    for (int cornerNr = 0; cornerNr < 8; cornerNr++) 
+    {
+        if (data.cornerDensities[8 * cubeNr + cornerNr] > data.densityThreshold) 
+            marchingCubesCode |= 1 << cornerNr;
     }
 
-    if (marchingCubesCode == 0) return;
+    if (marchingCubesCode == 0) 
+        return;
 
     int tableStart = firstMarchingCubesId[marchingCubesCode];
     int outPos = data.cubeFirstTriId[cubeNr];
-    for (int i = 0; i < (firstMarchingCubesId[marchingCubesCode + 1] - tableStart); i++) {
+    for (int i = 0; i < (firstMarchingCubesId[marchingCubesCode + 1] - tableStart); i++) 
+    {
         triIndices[outPos + i] = edgeVertexId[marchingCubesIds[tableStart + i]];
     }
 }
@@ -419,21 +455,25 @@ __global__ void kernel_createCubeTriangles(MarchingCubesSurfaceDeviceData data, 
 __global__ void kernel_createVerticesAndNormals(MarchingCubesSurfaceDeviceData data, Vec3* vertices, Vec3* normals) 
 {
     int cubeNr = threadIdx.x + blockIdx.x * blockDim.x;
-    if (cubeNr >= data.numCubes) return;
+    if (cubeNr >= data.numCubes) 
+        return;
 
     int xi, yi, zi;
     unpackCoords(data.cubeCoords[cubeNr], xi, yi, zi);
     Vec3 cubeOrig = Vec3(xi * data.gridSpacing, yi * data.gridSpacing, zi * data.gridSpacing) + Vec3(data.worldOrig, data.worldOrig, data.worldOrig);
 
-    for (int edgeNr = 0; edgeNr < 12; edgeNr++) {
-        if (data.cubeEdgeLinks[12 * cubeNr + edgeNr] >= 0) continue;
+    for (int edgeNr = 0; edgeNr < 12; edgeNr++) 
+    {
+        if (data.cubeEdgeLinks[12 * cubeNr + edgeNr] >= 0) 
+            continue;
 
         int id0 = marchingCubeEdges[edgeNr][0];
         int id1 = marchingCubeEdges[edgeNr][1];
         float d0 = data.cornerDensities[8 * cubeNr + id0];
         float d1 = data.cornerDensities[8 * cubeNr + id1];
 
-        if ((d0 <= data.densityThreshold && d1 > data.densityThreshold) || (d0 > data.densityThreshold && d1 <= data.densityThreshold)) {
+        if ((d0 <= data.densityThreshold && d1 > data.densityThreshold) || (d0 > data.densityThreshold && d1 <= data.densityThreshold)) 
+        {
             float t = (d1 != d0) ? Clamp((data.densityThreshold - d0) / (d1 - d0), 0.0f, 1.0f) : 0.5f;
             Vec3 p0 = cubeOrig + Vec3((float)marchingCubeCorners[id0][0], (float)marchingCubeCorners[id0][1], (float)marchingCubeCorners[id0][2]) * data.gridSpacing;
             Vec3 p1 = cubeOrig + Vec3((float)marchingCubeCorners[id1][0], (float)marchingCubeCorners[id1][1], (float)marchingCubeCorners[id1][2]) * data.gridSpacing;
@@ -471,16 +511,20 @@ bool MarchingCubesSurface::initialize(int numParticles, float gridSpacing, bool 
     m_deviceData->hashLastCube.resize(MARCHING_CUBES_HASH_SIZE, false);
     m_deviceData->firstExpandedCube.resize(numParticles, false);
 
-    if (useBufferObjects) {
-        if (m_verticesVbo == 0) {
+    if (useBufferObjects) 
+    {
+        if (m_verticesVbo == 0) 
+        {
             glGenBuffers(1, &m_verticesVbo);
             cudaGraphicsGLRegisterBuffer(&m_cudaVerticesVboResource, m_verticesVbo, cudaGraphicsMapFlagsWriteDiscard);
         }
-        if (m_normalsVbo == 0) {
+        if (m_normalsVbo == 0) 
+        {
             glGenBuffers(1, &m_normalsVbo);
             cudaGraphicsGLRegisterBuffer(&m_cudaNormalsVboResource, m_normalsVbo, cudaGraphicsMapFlagsWriteDiscard);
         }
-        if (m_triIdsIbo == 0) {
+        if (m_triIdsIbo == 0) 
+        {
             glGenBuffers(1, &m_triIdsIbo);
             cudaGraphicsGLRegisterBuffer(&m_cudaTriIboResource, m_triIdsIbo, cudaGraphicsMapFlagsWriteDiscard);
         }
@@ -512,7 +556,8 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
     if (!m_deviceData || !m_initialized || m_deviceData->numParticles != numParticles) return false;
 
     const float* particles = particlePositions;
-    if (!onGpu) {
+    if (!onGpu) 
+    {
         m_deviceData->particlePos.set(particlePositions, numParticles * stride);
         particles = m_deviceData->particlePos.buffer;
     }
@@ -602,13 +647,16 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
 
     // 8. Create Mesh
     int* triIndices = nullptr;
-    if (m_useBufferObjects) {
+    if (m_useBufferObjects) 
+    {
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_triIdsIbo);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, m_deviceData->numTriIds * sizeof(int), nullptr, GL_STATIC_DRAW);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
         cudaGraphicsMapResources(1, &m_cudaTriIboResource, 0);
         cudaGraphicsResourceGetMappedPointer((void**)&triIndices, nullptr, m_cudaTriIboResource);
-    } else {
+    } 
+    else 
+    {
         m_deviceData->triIndices.resize(m_deviceData->numTriIds, false);
         triIndices = m_deviceData->triIndices.buffer;
     }
@@ -618,7 +666,8 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
     if (m_useBufferObjects) cudaGraphicsUnmapResources(1, &m_cudaTriIboResource, 0);
 
     Vec3 *vertices = nullptr, *normals = nullptr;
-    if (m_useBufferObjects) {
+    if (m_useBufferObjects) 
+    {
         glBindBuffer(GL_ARRAY_BUFFER, m_verticesVbo);
         glBufferData(GL_ARRAY_BUFFER, m_deviceData->numVertices * sizeof(Vec3), nullptr, GL_STATIC_DRAW);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -630,7 +679,9 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         cudaGraphicsMapResources(1, &m_cudaNormalsVboResource, 0);
         cudaGraphicsResourceGetMappedPointer((void**)&normals, nullptr, m_cudaNormalsVboResource);
-    } else {
+    } 
+    else 
+    {
         m_deviceData->meshVertices.resize(m_deviceData->numVertices, false);
         m_deviceData->meshNormals.resize(m_deviceData->numVertices, false);
         vertices = m_deviceData->meshVertices.buffer;
@@ -639,7 +690,8 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
 
     kernel_createVerticesAndNormals<<<(m_deviceData->numCubes + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*m_deviceData, vertices, normals);
     cudaCheck(cudaGetLastError());
-    if (m_useBufferObjects) {
+    if (m_useBufferObjects) 
+    {
         cudaGraphicsUnmapResources(1, &m_cudaVerticesVboResource, 0);
         cudaGraphicsUnmapResources(1, &m_cudaNormalsVboResource, 0);
     }
@@ -663,12 +715,39 @@ int MarchingCubesSurface::getNumTriangles() const { return m_initialized ? m_dev
 
 void MarchingCubesSurface::free()
 {
-    if (m_cudaVerticesVboResource) { cudaGraphicsUnregisterResource(m_cudaVerticesVboResource); m_cudaVerticesVboResource = nullptr; }
-    if (m_cudaNormalsVboResource) { cudaGraphicsUnregisterResource(m_cudaNormalsVboResource); m_cudaNormalsVboResource = nullptr; }
-    if (m_cudaTriIboResource) { cudaGraphicsUnregisterResource(m_cudaTriIboResource); m_cudaTriIboResource = nullptr; }
-    if (m_verticesVbo) { glDeleteBuffers(1, &m_verticesVbo); m_verticesVbo = 0; }
-    if (m_normalsVbo) { glDeleteBuffers(1, &m_normalsVbo); m_normalsVbo = 0; }
-    if (m_triIdsIbo) { glDeleteBuffers(1, &m_triIdsIbo); m_triIdsIbo = 0; }
-    if (m_deviceData) m_deviceData->free();
-    m_deviceData = nullptr; m_initialized = false;
+    if (m_cudaVerticesVboResource) 
+    { 
+        cudaGraphicsUnregisterResource(m_cudaVerticesVboResource); 
+        m_cudaVerticesVboResource = nullptr; 
+    }
+    if (m_cudaNormalsVboResource) 
+    { 
+        cudaGraphicsUnregisterResource(m_cudaNormalsVboResource); 
+        m_cudaNormalsVboResource = nullptr; 
+    }
+    if (m_cudaTriIboResource) 
+    { 
+        cudaGraphicsUnregisterResource(m_cudaTriIboResource); 
+        m_cudaTriIboResource = nullptr; 
+    }
+    if (m_verticesVbo) 
+    { 
+        glDeleteBuffers(1, &m_verticesVbo); 
+        m_verticesVbo = 0; 
+    }
+    if (m_normalsVbo) 
+    { 
+        glDeleteBuffers(1, &m_normalsVbo); 
+        m_normalsVbo = 0; 
+    }
+    if (m_triIdsIbo) 
+    { 
+        glDeleteBuffers(1, &m_triIdsIbo); 
+        m_triIdsIbo = 0; 
+    }
+    if (m_deviceData) 
+        m_deviceData->free();
+    
+    m_deviceData = nullptr; 
+    m_initialized = false;
 }
