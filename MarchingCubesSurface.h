@@ -41,6 +41,12 @@ public:
     unsigned int getNormalsVbo() const { return m_useBufferObjects ? m_normalsVbo : 0; }
     unsigned int getTriIndicesIbo() const { return m_useBufferObjects ? m_triIdsIbo : 0; }
 
+    // Set the density threshold for the isosurface (should be ~restDensity * 0.5)
+    void setDensityThreshold(float threshold);
+    
+    // Get debug info
+    int getNumCubes() const;
+
     void free();
 
 private:  

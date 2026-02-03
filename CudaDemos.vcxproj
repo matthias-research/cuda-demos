@@ -110,6 +110,8 @@
     <ClCompile Include="Scene.cpp" />
     <ClCompile Include="Renderer.cpp" />
     <ClCompile Include="PointRenderer.cpp" />
+    <ClCompile Include="SurfaceRenderer.cpp" />
+    <ClCompile Include="MarchingCubesRenderer.cpp" />
     <ClCompile Include="Skybox.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -130,6 +132,8 @@
     <ClInclude Include="RenderUtils.h" />
     <ClInclude Include="Skybox.h" />
     <ClInclude Include="CudaHash.h" />
+    <ClInclude Include="SurfaceRenderer.h" />
+    <ClInclude Include="MarchingCubesRenderer.h" />
     <ClInclude Include="MarchingCubesSurface.h" />
     <ClInclude Include="MarchingCubesTable.h" />
   </ItemGroup>

@@ -8,10 +8,20 @@
 #include "Scene.h"
 #include "Renderer.h"
 #include "PointRenderer.h"
+#include "SurfaceRenderer.h"
+#include "MarchingCubesRenderer.h"
+#include "MarchingCubesSurface.h"
 #include "Skybox.h"
 #include <GL/glew.h>
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
+
+// Fluid rendering mode
+enum class FluidRenderMode {
+    Particles,          // Point sprites
+    ScreenSpaceSurface, // Screen-space curvature flow
+    MarchingCubes       // Marching cubes mesh
+};
 
 struct FluidDemoDescriptor {
     int numParticles = 100000;
@@ -47,6 +57,20 @@ struct FluidDemoDescriptor {
 
         cameraPos = Vec3(0.0f, 40.0f, 100.0f);
         cameraLookAt = Vec3(0.0f, 20.0f, 0.0f);
+    }
+
+    void setupDebugScene() {
+        numParticles = 1;
+        gravity = 0.0f;  // No gravity for debugging
+        particleRadius = 5.0f;  // Large particle
+        kernelRadius = 15.0f;   // Large kernel radius
+        maxVelocity = 0.0f;
+
+        sceneBounds = Bounds3(Vec3(-100.0f, -100.0f, -100.0f), Vec3(100.0f, 100.0f, 100.0f));
+        spawnBounds = Bounds3(Vec3(0.0f, 30.0f, 0.0f), Vec3(0.0f, 30.0f, 0.0f));  // Single point
+
+        cameraPos = Vec3(0.0f, 30.0f, 60.0f);
+        cameraLookAt = Vec3(0.0f, 30.0f, 0.0f);
     }
 };
 
@@ -93,6 +117,12 @@ private:
     // Point rendering
     PointRenderer* particleRenderer = nullptr;
     
+    // Surface rendering
+    SurfaceRenderer* surfaceRenderer = nullptr;
+    MarchingCubesRenderer* marchingCubesRenderer = nullptr;
+    std::shared_ptr<MarchingCubesSurface> marchingCubesSurface = nullptr;
+    FluidRenderMode renderMode = FluidRenderMode::Particles;
+    
     // CUDA resources
     cudaGraphicsResource* cudaVboResource = nullptr;
     std::shared_ptr<FluidDeviceData> deviceData = nullptr;
@@ -119,4 +149,7 @@ private:
     // Skybox
     Skybox* skybox = nullptr;
     bool showSkybox = true;
+
+    // Debug
+    bool showDebugParticles = false;
 };

@@ -2,6 +2,7 @@
 #include "CudaUtils.h"
 #include "CudaMeshes.h"
 #include "CudaHash.h"
+#include "MarchingCubesSurface.h"
 #include "BVH.h"
 #include "Scene.h"
 #include "Mesh.h"
@@ -505,6 +506,13 @@ void FluidDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
     deviceData->restDensity = restDensity;
     printf("FluidDemo: kernelRadius=%.3f, spawnSpacing=%.3f, restDensity=%.6f\n", h, s, restDensity);
 
+    // Set marching cubes density threshold (isosurface at ~50% of rest density)
+    if (marchingCubesSurface) {
+        float threshold = restDensity * 0.5f;
+        marchingCubesSurface->setDensityThreshold(threshold);
+        printf("FluidDemo: Marching cubes threshold=%.6f\n", threshold);
+    }
+
     deviceData->vel.resize(demoDesc.numParticles, false);
     deviceData->prevPos.resize(demoDesc.numParticles, false);
     deviceData->posCorr.resize(demoDesc.numParticles, false);
@@ -540,6 +548,11 @@ void FluidDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
         *deviceData, demoDesc.spawnBounds,
         particlesPerLayer, particlesPerRow, particlesPerCol,
         gridSpacing, (unsigned long)time(nullptr));
+
+    // Generate initial marching cubes surface so it's visible before simulation starts
+    if (marchingCubesSurface) {
+        marchingCubesSurface->update(deviceData->numParticles, deviceData->vboData, VBO_STRIDE, true);
+    }
 
     cudaGraphicsUnmapResources(1, vboResource, 0);
 }
@@ -596,6 +609,11 @@ void FluidDemo::updateCudaPhysics(float dt, cudaGraphicsResource* vboResource) {
 
         // Derive velocity from position change
         kernel_deriveVelocity<<<numBlocks, THREADS_PER_BLOCK>>>(*deviceData, sdt);
+    }
+
+    // Update marching cubes surface if in that render mode
+    if (renderMode == FluidRenderMode::MarchingCubes && marchingCubesSurface) {
+        marchingCubesSurface->update(deviceData->numParticles, deviceData->vboData, VBO_STRIDE, true);
     }
 
     cudaDeviceSynchronize();

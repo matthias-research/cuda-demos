@@ -21,6 +21,18 @@ FluidDemo::FluidDemo(const FluidDemoDescriptor& desc) {
     particleRenderer = new PointRenderer();
     particleRenderer->init(demoDesc.numParticles, layout);
 
+    // Initialize surface renderer (screen-space)
+    surfaceRenderer = new SurfaceRenderer();
+    surfaceRenderer->init(demoDesc.numParticles, layout);
+
+    // Initialize marching cubes renderer
+    marchingCubesRenderer = new MarchingCubesRenderer();
+    marchingCubesRenderer->init();
+
+    // Initialize marching cubes surface (uses kernel radius for grid spacing)
+    marchingCubesSurface = std::make_shared<MarchingCubesSurface>();
+    marchingCubesSurface->initialize(demoDesc.numParticles, demoDesc.kernelRadius, true);
+
     // Initialize mesh renderer
     meshRenderer = new Renderer();
     meshRenderer->init();
@@ -48,6 +60,18 @@ FluidDemo::~FluidDemo() {
     if (particleRenderer) {
         particleRenderer->cleanup();
         delete particleRenderer;
+    }
+    if (surfaceRenderer) {
+        surfaceRenderer->cleanup();
+        delete surfaceRenderer;
+    }
+    if (marchingCubesRenderer) {
+        marchingCubesRenderer->cleanup();
+        delete marchingCubesRenderer;
+    }
+    if (marchingCubesSurface) {
+        marchingCubesSurface->free();
+        marchingCubesSurface.reset();
     }
     if (scene) {
         scene->cleanup();
@@ -160,7 +184,7 @@ void FluidDemo::renderUI() {
     ImGui::Text("Simulation Parameters:");
 
     bool particleCountChanged = false;
-    if (ImGui::SliderInt("Particle Count##fluid", &demoDesc.numParticles, 1000, 200000)) {
+    if (ImGui::SliderInt("Particle Count##fluid", &demoDesc.numParticles, 1, 200000)) {
         particleCountChanged = true;
     }
 
@@ -183,6 +207,27 @@ void FluidDemo::renderUI() {
     float sinAzim = sinf(demoDesc.lightAzimuth);
     float cosAzim = cosf(demoDesc.lightAzimuth);
     lightDir = Vec3(sinElev * cosAzim, cosElev, sinElev * sinAzim).normalized();
+
+    ImGui::Separator();
+    ImGui::Text("Render Mode:");
+    int currentMode = static_cast<int>(renderMode);
+    const char* modeNames[] = { "Particles", "Screen Space Surface", "Marching Cubes" };
+    if (ImGui::Combo("##RenderMode", &currentMode, modeNames, 3)) {
+        renderMode = static_cast<FluidRenderMode>(currentMode);
+    }
+
+    // Show marching cubes stats when in that mode
+    if (renderMode == FluidRenderMode::MarchingCubes && marchingCubesSurface) {
+        ImGui::Text("  Cubes: %d", marchingCubesSurface->getNumCubes());
+        ImGui::Text("  Vertices: %d", marchingCubesSurface->getNumVertices());
+        ImGui::Text("  Triangles: %d", marchingCubesSurface->getNumTriangles());
+        
+        GLuint vbo = marchingCubesSurface->getVerticesVbo();
+        GLuint ibo = marchingCubesSurface->getTriIndicesIbo();
+        ImGui::Text("  VBO: %u, IBO: %u", vbo, ibo);
+        
+        ImGui::Checkbox("Show Debug Particles##mc", &showDebugParticles);
+    }
 
     ImGui::Separator();
     ImGui::Text("Scene:");
@@ -209,6 +254,13 @@ void FluidDemo::renderUI() {
             cudaVboResource = nullptr;
         }
         particleRenderer->resize(demoDesc.numParticles);
+        
+        // Reinitialize marching cubes surface
+        if (marchingCubesSurface) {
+            marchingCubesSurface->free();
+            marchingCubesSurface->initialize(demoDesc.numParticles, demoDesc.kernelRadius, true);
+        }
+        
         initParticles();
     }
 }
@@ -249,9 +301,34 @@ void FluidDemo::render3D(int width, int height) {
         skybox->render(camera);
     }
 
-    // Render particles with uniform radius
-    particleRenderer->render(camera, demoDesc.numParticles, PointRenderer::Mode::Particle,
-                             0, lightDir, width, height, demoDesc.particleRadius);
+    // Render fluid based on selected mode
+    switch (renderMode) {
+        case FluidRenderMode::Particles:
+            particleRenderer->render(camera, demoDesc.numParticles, PointRenderer::Mode::Particle,
+                                     0, lightDir, width, height, demoDesc.particleRadius);
+            break;
+
+        case FluidRenderMode::ScreenSpaceSurface:
+            if (surfaceRenderer) {
+                surfaceRenderer->render(camera, particleRenderer->getVBO(), demoDesc.numParticles,
+                                        lightDir, width, height);
+            }
+            break;
+
+        case FluidRenderMode::MarchingCubes:
+            if (marchingCubesRenderer && marchingCubesSurface) {
+                marchingCubesRenderer->render(camera, marchingCubesSurface.get(), lightDir, width, height);
+                
+                // Debug: also render particles as small points to see if surface aligns
+                if (showDebugParticles) {
+                    glDepthMask(GL_FALSE);  // Don't write to depth buffer
+                    particleRenderer->render(camera, demoDesc.numParticles, PointRenderer::Mode::Particle,
+                                             0, lightDir, width, height, demoDesc.particleRadius * 0.3f);
+                    glDepthMask(GL_TRUE);
+                }
+            }
+            break;
+    }
 
     // Render static scene meshes
     if (showScene && scene && meshRenderer) {

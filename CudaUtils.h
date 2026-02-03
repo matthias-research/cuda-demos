@@ -54,8 +54,7 @@ struct DeviceBuffer
             return;
         }
     
-        // Allocate more than needed to avoid frequent reallocs
-        size_t newCapacity = newSize * 2; 
+        size_t newCapacity = size_t(newSize * 1.2f); 
         T* newBuffer;
     
         cudaCheck(cudaMalloc((void**)&newBuffer, newCapacity * sizeof(T)));
