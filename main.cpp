@@ -807,9 +807,9 @@ int main(int argc, char** argv) {
     demos.push_back(std::make_unique<MandelbrotDemo>());
 
     FluidDemoDescriptor fluidDesc;
-    fluidDesc.setupDebugScene();  // Use debug scene with 1 large particle
+    fluidDesc.setupDefaultScene();
     auto fluidDemo = std::make_unique<FluidDemo>(fluidDesc);
-    fluidDemo->setName("Fluid: Debug (1 particle)");
+    fluidDemo->setName("Fluid Simulation");
     demos.push_back(std::move(fluidDemo));
     
     // Set camera for 3D demos

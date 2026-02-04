@@ -277,7 +277,7 @@ __global__ void kernel_addParticleDensities(MarchingCubesSurfaceDeviceData data,
 
     float h_rad = 1.5f * data.gridSpacing;
     float h2 = h_rad * h_rad;
-    float kernelScale = 315.0f / (64.0f * 3.14159265f * h2 * h2 * h2 * h2 * h_rad) / data.restDensity;
+    // float kernelScale = 315.0f / (64.0f * 3.14159265f * h2 * h2 * h2 * h2 * h_rad) / data.restDensity;
 
     int xi, yi, zi;
     getPosCoords(pos, data.invGridSpacing, data.worldOrig, xi, yi, zi);
@@ -352,7 +352,7 @@ __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDe
     {
         if (i == 13) 
         { 
-            adjCubes[i] = -1; 
+            adjCubes[i] = cubeNr;
             continue; 
         }
 
@@ -362,14 +362,17 @@ __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDe
 
         int adjCubeNr = -1;
         int h = hashFunction(adjXi, adjYi, adjZi);
-        for (int j = data.hashFirstCube[h]; j < data.hashLastCube[h]; j++) 
+        uint64_t adjCubeCoord = packCoords(adjXi, adjYi, adjZi);
+        int first = data.hashFirstCube[h];
+        int last = data.hashLastCube[h];
+        for (int j = first; j < last; j++) 
         {
-            if (data.cubeCoords[j] == packCoords(adjXi, adjYi, adjZi)) 
+            if (data.cubeCoords[j] == adjCubeCoord) 
             {
                 adjCubeNr = j;
                 break;
             }
-        }
+        }   
         adjCubes[i] = adjCubeNr;
     }
 
@@ -377,22 +380,19 @@ __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDe
 
     for (int cornerNr = 0; cornerNr < 8; cornerNr++) 
     {
-        float density = data.cornerDensities[8 * cubeNr + cornerNr];
-        Vec3 normal = data.cornerNormals[8 * cubeNr + cornerNr];
+        float density = 0.0f;
+        Vec3 normal = Vec3(Zero);
 
         for (int i = 0; i < 8; i++) 
         {   
             int adjCubeNr = adjCubes[cornerAdjCellNr[cornerNr][i]];
-            if (adjCubeNr < 0) 
-                continue;
-
             int adjCornerNr = cornerAdjCornerNr[cornerNr][i];
             density += data.cornerDensities[8 * adjCubeNr + adjCornerNr];
             normal += data.cornerNormals[8 * adjCubeNr + adjCornerNr];
         }
 
-        data.cornerDensitiesSum[3 * cubeNr + cornerNr] += density;
-        data.cornerNormals[8 * cubeNr + cornerNr] = normal;
+        data.cornerDensitiesSum[8 * cubeNr + cornerNr] += density;
+        data.cornerNormalsSum[8 * cubeNr + cornerNr] = normal;
         if (density > data.densityThreshold) 
         {
             marchingCubesCode |= 1 << cornerNr;
@@ -423,8 +423,8 @@ __global__ void kernel_sumCornerDensitiesAndFindEdgeLinks(MarchingCubesSurfaceDe
             }
             data.cubeEdgeLinks[12 * cubeNr + edgeNr] = -1;
 
-            float d0 = data.cornerDensities[8 * cubeNr + marchingCubeEdges[edgeNr][0]];
-            float d1 = data.cornerDensities[8 * cubeNr + marchingCubeEdges[edgeNr][1]];
+            float d0 = data.cornerDensitiesSum[8 * cubeNr + marchingCubeEdges[edgeNr][0]];
+            float d1 = data.cornerDensitiesSum[8 * cubeNr + marchingCubeEdges[edgeNr][1]];
             if ((d0 <= data.densityThreshold && d1 > data.densityThreshold) || (d0 > data.densityThreshold && d1 <= data.densityThreshold)) 
             {
                 data.edgeVertexNr[12 * cubeNr + edgeNr] = 1;
@@ -449,7 +449,7 @@ __global__ void kernel_createCubeTriangles(MarchingCubesSurfaceDeviceData data, 
     int marchingCubesCode = 0;
     for (int cornerNr = 0; cornerNr < 8; cornerNr++) 
     {
-        if (data.cornerDensities[8 * cubeNr + cornerNr] > data.densityThreshold) 
+        if (data.cornerDensitiesSum[8 * cubeNr + cornerNr] > data.densityThreshold) 
             marchingCubesCode |= 1 << cornerNr;
     }
 
@@ -457,8 +457,10 @@ __global__ void kernel_createCubeTriangles(MarchingCubesSurfaceDeviceData data, 
         return;
 
     int tableStart = firstMarchingCubesId[marchingCubesCode];
+    int numCubeIds = firstMarchingCubesId[marchingCubesCode + 1] - tableStart;
+
     int outPos = data.cubeFirstTriId[cubeNr];
-    for (int i = 0; i < (firstMarchingCubesId[marchingCubesCode + 1] - tableStart); i++) 
+    for (int i = 0; i < numCubeIds; i++) 
     {
         triIndices[outPos + i] = edgeVertexId[marchingCubesIds[tableStart + i]];
     }
@@ -481,8 +483,8 @@ __global__ void kernel_createVerticesAndNormals(MarchingCubesSurfaceDeviceData d
 
         int id0 = marchingCubeEdges[edgeNr][0];
         int id1 = marchingCubeEdges[edgeNr][1];
-        float d0 = data.cornerDensities[8 * cubeNr + id0];
-        float d1 = data.cornerDensities[8 * cubeNr + id1];
+        float d0 = data.cornerDensitiesSum[8 * cubeNr + id0];
+        float d1 = data.cornerDensitiesSum[8 * cubeNr + id1];
 
         if ((d0 <= data.densityThreshold && d1 > data.densityThreshold) || (d0 > data.densityThreshold && d1 <= data.densityThreshold)) 
         {
@@ -492,7 +494,7 @@ __global__ void kernel_createVerticesAndNormals(MarchingCubesSurfaceDeviceData d
             
             int vId = data.edgeVertexNr[12 * cubeNr + edgeNr];
             vertices[vId] = p0 + t * (p1 - p0);
-            Vec3 n = data.cornerNormals[8 * cubeNr + id0] + t * (data.cornerNormals[8 * cubeNr + id1] - data.cornerNormals[8 * cubeNr + id0]);
+            Vec3 n = data.cornerNormalsSum[8 * cubeNr + id0] + t * (data.cornerNormalsSum[8 * cubeNr + id1] - data.cornerNormalsSum[8 * cubeNr + id0]);
             n.normalize();
             normals[vId] = n;
         }
@@ -704,7 +706,7 @@ bool MarchingCubesSurface::update(int numParticles, const float* particlePositio
     thrust::exclusive_scan(vertScanPtr, vertScanPtr + 12 * m_deviceData->numCubes + 1, vertScanPtr);
     m_deviceData->edgeVertexNr.getDeviceObject(m_deviceData->numVertices, 12 * m_deviceData->numCubes);
 
-    // 8. Create Mesh
+    // Create Mesh
     int* triIndices = nullptr;
     if (m_useBufferObjects) 
     {
