@@ -66,4 +66,8 @@ private:
     cudaGraphicsResource* m_cudaNormalsVboResource = nullptr;
     cudaGraphicsResource* m_cudaTriIboResource = nullptr;
 
+    // Capacity tracking to avoid reallocating VBOs every frame
+    size_t m_verticesVboCapacity = 0;
+    size_t m_normalsVboCapacity = 0;
+    size_t m_triIdsIboCapacity = 0;
 };

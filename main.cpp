@@ -809,7 +809,7 @@ int main(int argc, char** argv) {
     FluidDemoDescriptor fluidDesc;
     fluidDesc.setupDefaultScene();
     auto fluidDemo = std::make_unique<FluidDemo>(fluidDesc);
-    fluidDemo->setName("Fluid Simulation");
+    fluidDemo->setName("Fluid");
     demos.push_back(std::move(fluidDemo));
     
     // Set camera for 3D demos

@@ -286,9 +286,11 @@ __device__ void kernel_particleMeshCollision(
                 Vec3 toParticle = pos - closestPoint;
                 float dist = toParticle.magnitude();
 
-                if (dist < radius && dist > 0.001f) {
+                if (dist < radius) {
                     Vec3 normal = toParticle / dist;
                     pos = closestPoint + normal * radius;
+                    if ((triIdx % 2) == 0)
+                        pos += normal * 1.0f * radius;
                 }
             }
             else {  // Internal node
