@@ -216,6 +216,33 @@ void FluidDemo::renderUI() {
         renderMode = static_cast<FluidRenderMode>(currentMode);
     }
 
+    // Show screen space surface parameters when in that mode
+    if (renderMode == FluidRenderMode::ScreenSpaceSurface && surfaceRenderer) {
+        SurfaceRenderer::FluidStyle& style = surfaceRenderer->getStyle();
+        
+        ImGui::Separator();
+        ImGui::Text("Curvature Flow Smoothing:");
+        ImGui::SliderInt("Iterations##ss", &style.smoothingIterations, 0, 200);
+        ImGui::SliderFloat("Timestep (dt)##ss", &style.smoothingDt, 0.0001f, 0.01f, "%.4f");
+        ImGui::SliderFloat("Z Contribution##ss", &style.smoothingZContrib, 0.0f, 50.0f, "%.1f");
+        
+        ImGui::Separator();
+        ImGui::Text("Particle Rendering:");
+        ImGui::SliderFloat("Depth Scale##ss", &style.particleScale, 0.5f, 10.0f, "%.1f");
+        ImGui::SliderFloat("Thickness Scale##ss", &style.thicknessScale, 0.5f, 10.0f, "%.1f");
+        
+        ImGui::Separator();
+        ImGui::Text("Fluid Appearance:");
+        ImGui::ColorEdit3("Absorption##ss", &style.absorptionCoeff.x);
+        ImGui::SliderFloat("Absorption Scale##ss", &style.absorptionScale, 0.1f, 5.0f, "%.1f");
+        
+        ImGui::Separator();
+        ImGui::Text("Lighting:");
+        ImGui::SliderFloat("Specular Power##ss", &style.specularPower, 1.0f, 256.0f, "%.0f");
+        ImGui::SliderFloat("Fresnel Power##ss", &style.fresnelPower, 1.0f, 10.0f, "%.1f");
+        ImGui::SliderFloat("Ambient##ss", &style.ambientStrength, 0.0f, 1.0f, "%.2f");
+    }
+
     // Show marching cubes stats when in that mode
     if (renderMode == FluidRenderMode::MarchingCubes && marchingCubesSurface) {
         ImGui::Text("  Cubes: %d", marchingCubesSurface->getNumCubes());
@@ -311,7 +338,7 @@ void FluidDemo::render3D(int width, int height) {
         case FluidRenderMode::ScreenSpaceSurface:
             if (surfaceRenderer) {
                 surfaceRenderer->render(camera, particleRenderer->getVBO(), demoDesc.numParticles,
-                                        lightDir, width, height);
+                                        demoDesc.particleRadius, lightDir, width, height);
             }
             break;
 

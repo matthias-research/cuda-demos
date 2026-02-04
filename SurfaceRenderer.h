@@ -17,18 +17,19 @@ public:
     bool init(int maxParticles, const PointRenderer::AttribLayout& layout);
     
     // Render fluid surface from particle VBO
+    // particleRadius: base radius of particles (used when layout.radiusOffset == -1)
     void render(Camera* camera, GLuint particleVBO, int particleCount,
-                const Vec3& lightDir, int width, int height);
+                float particleRadius, const Vec3& lightDir, int width, int height);
     
     // Fluid rendering parameters
     struct FluidStyle {
         // Curvature flow smoothing
         int smoothingIterations = 50;       // Number of curvature flow iterations
-        float smoothingDt = 0.0005f;        // Timestep per iteration
+        float smoothingDt = 0.005f;         // Timestep per iteration (0.005 works well)
         float smoothingZContrib = 10.0f;    // Adaptive timestep based on depth gradient
         
         // Particle rendering
-        float particleScale = 2.0f;         // Scale factor for particle size in depth pass
+        float particleScale = 1.5f;         // Scale factor for particle size in depth pass
         float thicknessScale = 3.0f;        // Scale factor for thickness pass particles
         
         // Fluid appearance (Beer's law absorption)
@@ -51,10 +52,10 @@ private:
     void initFramebuffers(int width, int height);
     void setupParticleVAO(GLuint particleVBO);
     
-    void renderDepthPass(Camera* camera, int particleCount, int width, int height);
-    void renderThicknessPass(Camera* camera, int particleCount, int width, int height);
+    void renderDepthPass(Camera* camera, int particleCount, float radius, int width, int height);
+    void renderThicknessPass(Camera* camera, int particleCount, float radius, int width, int height);
     void runCurvatureFlowCompute(Camera* camera, int width, int height);
-    void renderComposite(Camera* camera, const Vec3& lightDir, int width, int height);
+    void renderComposite(Camera* camera, float radius, const Vec3& lightDir, int width, int height);
 
     // Particle VAO (references external VBO)
     GLuint particleVAO = 0;

@@ -1,171 +1,140 @@
 #include "SurfaceRenderer.h"
 #include "RenderUtils.h"
 #include "Camera.h"
-#include <cstdio>
+#include <iostream>
+#include <cstring>
 #include <cmath>
 
-// Depth pass vertex shader - renders particles as point sprites
-static const char* depthVertexShader = R"(
+//-----------------------------------------------------------------------------
+// Shader sources
+//-----------------------------------------------------------------------------
+
+// Vertex shader for point sprites (depth and thickness passes)
+static const char* pointSpriteVertexShader = R"(
 #version 430 core
 layout (location = 0) in vec3 aPos;
 
-uniform mat4 projectionMat;
 uniform mat4 viewMat;
+uniform mat4 projMat;
 uniform float pointScale;
-uniform float particleRadius;
+uniform float particleRadius;  // Base particle radius (uniform)
 
-out float eyeDepth;
+out vec3 eyePos;
+out float radius;
 
 void main() {
     vec4 eyeSpacePos = viewMat * vec4(aPos, 1.0);
-    gl_Position = projectionMat * eyeSpacePos;
-    
-    // Store positive eye-space depth (distance from camera)
-    eyeDepth = -eyeSpacePos.z;
+    gl_Position = projMat * eyeSpacePos;
+    eyePos = eyeSpacePos.xyz;
+    radius = particleRadius;
     
     float dist = length(eyeSpacePos.xyz);
-    gl_PointSize = particleRadius * (pointScale / dist);
+    gl_PointSize = radius * (pointScale / dist);
 }
 )";
 
-// Depth pass fragment shader - outputs linear eye-space depth with spherical correction
+// Depth fragment shader - outputs eye-space Z
 static const char* depthFragmentShader = R"(
 #version 430 core
+uniform float nearClip;
+uniform float farClip;
 
-in float eyeDepth;
+in vec3 eyePos;
+in float radius;
 
-layout (location = 0) out float fragDepth;
+out float fragDepth;
 
-uniform float particleRadius;
+float projectZ(float z) {
+    return farClip * (z + nearClip) / (z * (farClip - nearClip));
+}
 
 void main() {
     vec2 coord = gl_PointCoord * 2.0 - 1.0;
     float r2 = dot(coord, coord);
     if (r2 > 1.0) discard;
     
-    // Sphere depth offset - add the z component of the sphere surface
     float h = sqrt(1.0 - r2);
+    float z = eyePos.z + h * radius;  // Sphere surface Z (right-handed, negative Z into screen)
     
-    // Output linear eye-space depth (closer to camera = smaller positive value)
-    // Subtract because we want the front of the sphere
-    float correctedDepth = eyeDepth - h * particleRadius;
-    
-    fragDepth = correctedDepth;
-    
-    // Also write to hardware depth buffer for proper depth testing
-    // Convert linear depth to NDC depth
-    gl_FragDepth = gl_FragCoord.z;
+    fragDepth = z;  // Output unprojected Z for smoothing
+    gl_FragDepth = projectZ(z) * 0.5 + 0.5;
 }
 )";
 
-// Thickness pass vertex shader
-static const char* thicknessVertexShader = R"(
-#version 430 core
-layout (location = 0) in vec3 aPos;
-
-uniform mat4 projectionMat;
-uniform mat4 viewMat;
-uniform float pointScale;
-uniform float particleRadius;
-
-void main() {
-    vec4 eyeSpacePos = viewMat * vec4(aPos, 1.0);
-    gl_Position = projectionMat * eyeSpacePos;
-    
-    float dist = length(eyeSpacePos.xyz);
-    gl_PointSize = particleRadius * (pointScale / dist);
-}
-)";
-
-// Thickness pass fragment shader - outputs constant value for additive blending
+// Thickness fragment shader - additive blending
 static const char* thicknessFragmentShader = R"(
 #version 430 core
-
-layout (location = 0) out float fragThickness;
+out float fragThickness;
 
 void main() {
     vec2 coord = gl_PointCoord * 2.0 - 1.0;
     float r2 = dot(coord, coord);
     if (r2 > 1.0) discard;
     
-    // Output 1.0 - additive blending will accumulate thickness
-    fragThickness = 1.0;
+    // Sphere profile gives more thickness in the center
+    float h = sqrt(1.0 - r2);
+    fragThickness = h;  // Additive blending accumulates thickness
 }
 )";
 
 // Curvature flow compute shader
-// Implements mean curvature smoothing with perspective-correct derivatives
 static const char* curvatureFlowComputeShader = R"(
 #version 430 core
-layout (local_size_x = 16, local_size_y = 16) in;
+layout(local_size_x = 16, local_size_y = 16) in;
 
-layout (r32f, binding = 0) uniform image2D depthIn;
-layout (r32f, binding = 1) uniform image2D depthOut;
+layout(r32f, binding = 0) uniform image2D depthIn;
+layout(r32f, binding = 1) uniform image2D depthOut;
 
-uniform float width;
-uniform float height;
-uniform float projW;  // projection[0][0]
-uniform float projH;  // projection[1][1]
 uniform float dt;
-uniform float varyingZContrib;
+uniform float zContrib;
+uniform float projW;
+uniform float projH;
+uniform ivec2 imageSize;
 
-#define DEPTH(coords) imageLoad(depthIn, coords).r
-
-// First derivative of depth using central differences
-float diffZ(ivec2 coords, ivec2 offset) {
-    float dp = DEPTH(coords + offset);
-    float dm = DEPTH(coords - offset);
-    if (dp == 0.0 || dm == 0.0) return 0.0;
-    return (dp - dm) / 2.0;
+float readDepth(ivec2 pos) {
+    if (pos.x < 0 || pos.x >= imageSize.x || pos.y < 0 || pos.y >= imageSize.y) return 0.0;
+    return imageLoad(depthIn, pos).r;
 }
 
-// Second derivative of depth
-float diffZ2(ivec2 coords, ivec2 offset) {
-    float dp = DEPTH(coords + offset);
-    float d = DEPTH(coords);
-    float dm = DEPTH(coords - offset);
+float diffZ(ivec2 pos, ivec2 offset) {
+    float dp = readDepth(pos + offset);
+    float dm = readDepth(pos - offset);
     if (dp == 0.0 || dm == 0.0) return 0.0;
+    return (dp - dm) * 0.5;
+}
+
+float diffZ_2(ivec2 pos, ivec2 offset) {
+    float dp = readDepth(pos + offset);
+    float d = readDepth(pos);
+    float dm = readDepth(pos - offset);
     return dp - 2.0 * d + dm;
 }
 
-// Mixed partial derivative
-float diffZxy(ivec2 coords) {
-    ivec2 right = ivec2(1, 0);
-    ivec2 down = ivec2(0, 1);
-    float pp = DEPTH(coords + right + down);
-    float pm = DEPTH(coords + right - down);
-    float mp = DEPTH(coords - right + down);
-    float mm = DEPTH(coords - right - down);
-    if (pp == 0.0 || pm == 0.0 || mp == 0.0 || mm == 0.0) return 0.0;
-    return (pp - pm - mp + mm) / 4.0;
+float diffZ_xy(ivec2 pos) {
+    float pp = readDepth(pos + ivec2(1, 1));
+    float pm = readDepth(pos + ivec2(1, -1));
+    float mp = readDepth(pos + ivec2(-1, 1));
+    float mm = readDepth(pos + ivec2(-1, -1));
+    return (pp - pm - mp + mm) * 0.25;
 }
 
-// Compute mean curvature (divergence of normal)
-float computeMeanCurvature(ivec2 coords) {
-    float z = DEPTH(coords);
-    if (z == 0.0) return 0.0;
+float computeMeanCurvature(ivec2 pos) {
+    float z = readDepth(pos);
+    float z_x = diffZ(pos, ivec2(1, 0));
+    float z_y = diffZ(pos, ivec2(0, 1));
     
-    ivec2 right = ivec2(1, 0);
-    ivec2 down = ivec2(0, 1);
-    
-    float z_x = diffZ(coords, right);
-    float z_y = diffZ(coords, down);
-    
-    float Cx = -2.0 / (width * projW);
-    float Cy = -2.0 / (height * projH);
-    
-    float sx = float(coords.x);
-    float sy = float(coords.y);
-    float Wx = (width - 2.0 * sx) / (width * projW);
-    float Wy = (height - 2.0 * sy) / (height * projH);
+    float Cx = -2.0 / (float(imageSize.x) * projW);
+    float Cy = -2.0 / (float(imageSize.y) * projH);
     
     float D = Cy * Cy * z_x * z_x + Cx * Cx * z_y * z_y + Cx * Cx * Cy * Cy * z * z;
     
-    if (D < 1e-10) return 0.0;
+    // Prevent division by zero for flat surfaces
+    const float D_MIN = 1e-12;
+    if (D < D_MIN) return 0.0;
     
-    float z_xx = diffZ2(coords, right);
-    float z_yy = diffZ2(coords, down);
-    float z_xy = diffZxy(coords);
+    float z_xx = diffZ_2(pos, ivec2(1, 0));
+    float z_yy = diffZ_2(pos, ivec2(0, 1));
+    float z_xy = diffZ_xy(pos);
     
     float D_x = 2.0 * Cy * Cy * z_x * z_xx + 2.0 * Cx * Cx * z_y * z_xy + 2.0 * Cx * Cx * Cy * Cy * z * z_x;
     float D_y = 2.0 * Cy * Cy * z_x * z_xy + 2.0 * Cx * Cx * z_y * z_yy + 2.0 * Cx * Cx * Cy * Cy * z * z_y;
@@ -173,45 +142,39 @@ float computeMeanCurvature(ivec2 coords) {
     float Ex = 0.5 * z_x * D_x - z_xx * D;
     float Ey = 0.5 * z_y * D_y - z_yy * D;
     
-    float H = (Cy * Ex + Cx * Ey) / (2.0 * D * sqrt(D));
+    float sqrtD = sqrt(D);
+    float H = (Cy * Ex + Cx * Ey) / (2.0 * D * sqrtD);
     
-    return H;
+    // Clamp curvature to prevent extreme corrections
+    const float MAX_CURVATURE = 1.0;
+    return clamp(H, -MAX_CURVATURE, MAX_CURVATURE);
 }
 
 void main() {
-    ivec2 coords = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 imageSize = imageSize(depthIn);
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= imageSize.x || pos.y >= imageSize.y) return;
     
-    if (coords.x >= imageSize.x || coords.y >= imageSize.y) return;
+    float depth = readDepth(pos);
     
-    float depth = DEPTH(coords);
-    
-    // Skip background pixels
     if (depth == 0.0) {
-        imageStore(depthOut, coords, vec4(0.0));
+        imageStore(depthOut, pos, vec4(depth));
         return;
     }
     
-    ivec2 right = ivec2(1, 0);
-    ivec2 down = ivec2(0, 1);
+    float z_x = diffZ(pos, ivec2(1, 0));
+    float z_y = diffZ(pos, ivec2(0, 1));
     
-    float z_x = diffZ(coords, right);
-    float z_y = diffZ(coords, down);
+    float meanCurv = computeMeanCurvature(pos);
     
-    float meanCurv = computeMeanCurvature(coords);
+    // Adaptive smoothing: more smoothing where depth varies a lot
+    depth += meanCurv * dt * (1.0 + (abs(z_x) + abs(z_y)) * zContrib);
     
-    // Adaptive timestep based on depth gradient
-    // Areas with high depth variation need more smoothing
-    float adaptiveDt = dt * (1.0 + (abs(z_y) + abs(z_x)) * varyingZContrib);
-    
-    depth += meanCurv * adaptiveDt;
-    
-    imageStore(depthOut, coords, vec4(depth, 0.0, 0.0, 1.0));
+    imageStore(depthOut, pos, vec4(depth));
 }
 )";
 
-// Composite vertex shader - fullscreen quad
-static const char* compositeVertexShader = R"(
+// Fullscreen quad vertex shader
+static const char* fullscreenVertexShader = R"(
 #version 430 core
 layout (location = 0) in vec2 aPos;
 layout (location = 1) in vec2 aTexCoord;
@@ -224,154 +187,158 @@ void main() {
 }
 )";
 
-// Composite fragment shader - perspective-correct normals + Beer's law + Fresnel
+// Final compositing shader
 static const char* compositeFragmentShader = R"(
 #version 430 core
-
-in vec2 texCoord;
-out vec4 fragColor;
-
 uniform sampler2D depthTex;
 uniform sampler2D thicknessTex;
-
-uniform float width;
-uniform float height;
-uniform float projW;  // projection[0][0]
-uniform float projH;  // projection[1][1]
+uniform mat4 viewMat;
 uniform float nearClip;
 uniform float farClip;
-
+uniform float projW;
+uniform float projH;
+uniform vec2 windowSize;
 uniform vec3 lightDir;
-uniform vec3 eyePos;
-uniform mat4 invViewMat;
+uniform float radius;  // Particle radius for thickness scaling
 
+// Fluid appearance (from FluidStyle)
 uniform vec3 absorptionCoeff;
 uniform float absorptionScale;
 uniform float specularPower;
 uniform float fresnelPower;
 uniform float ambientStrength;
-uniform float particleRadius;
 
-// Convert UV + depth to eye-space position
+in vec2 texCoord;
+out vec4 fragColor;
+
+float projectZ(float z) {
+    return farClip * (z + nearClip) / (z * (farClip - nearClip));
+}
+
 vec3 uvToEye(vec2 uv, float z) {
-    vec2 ndc = uv * 2.0 - 1.0;
-    return vec3(-ndc.x / projW, -ndc.y / projH, 1.0) * z;
+    uv = uv * 2.0 - 1.0;
+    return vec3(-uv.x / projW, -uv.y / projH, 1.0) * z;
 }
 
-// Sample depth at texel coordinates
-float sampleDepth(ivec2 coords) {
-    return texelFetch(depthTex, coords, 0).r;
+float diffZ(vec2 uv, vec2 offset) {
+    float dp = texture(depthTex, uv + offset).r;
+    float dm = texture(depthTex, uv - offset).r;
+    if (dm == 0.0) return dp - texture(depthTex, uv).r;
+    if (dp == 0.0) return 0.0;
+    return (dp - dm) * 0.5;
 }
 
-// First derivative of depth
-float diffZ(ivec2 coords, ivec2 offset) {
-    float dp = sampleDepth(coords + offset);
-    float dm = sampleDepth(coords - offset);
-    if (dp == 0.0) return sampleDepth(coords) - dm;
-    if (dm == 0.0) return dp - sampleDepth(coords);
-    return (dp - dm) / 2.0;
-}
-
-// Compute perspective-correct normal from depth
-vec3 computeNormal(ivec2 coords) {
-    float z = sampleDepth(coords);
-    if (z == 0.0) return vec3(0.0);
+vec3 computeNormal(vec2 uv) {
+    float z = texture(depthTex, uv).r;
+    vec2 texelSize = 1.0 / windowSize;
     
-    ivec2 right = ivec2(1, 0);
-    ivec2 down = ivec2(0, 1);
+    float z_x = diffZ(uv, vec2(texelSize.x, 0.0));
+    float z_y = diffZ(uv, vec2(0.0, texelSize.y));
     
-    float z_x = diffZ(coords, right);
-    float z_y = diffZ(coords, down);
+    float Cx = -2.0 / (windowSize.x * projW);
+    float Cy = -2.0 / (windowSize.y * projH);
     
-    float Cx = -2.0 / (width * projW);
-    float Cy = -2.0 / (height * projH);
+    vec2 screenPos = uv * windowSize;
+    float Wx = (windowSize.x - 2.0 * screenPos.x) / (windowSize.x * projW);
+    float Wy = (windowSize.y - 2.0 * screenPos.y) / (windowSize.y * projH);
     
-    float sx = float(coords.x);
-    float sy = float(coords.y);
-    float Wx = (width - 2.0 * sx) / (width * projW);
-    float Wy = (height - 2.0 * sy) / (height * projH);
-    
-    // Derivative of uvToEye w.r.t. screen x
     vec3 dx = vec3(Cx * z + Wx * z_x, Wy * z_x, z_x);
-    
-    // Derivative of uvToEye w.r.t. screen y
     vec3 dy = vec3(Wx * z_y, Cy * z + Wy * z_y, z_y);
     
-    vec3 normal = normalize(cross(dx, dy));
+    vec3 normal = cross(dx, dy);
+    float len = length(normal);
     
-    return normal;
-}
-
-// Convert linear depth to NDC depth for depth buffer
-float linearToNDC(float linearDepth) {
-    // For right-handed system with reversed depth
-    return (farClip * (linearDepth - nearClip)) / (linearDepth * (farClip - nearClip));
+    // Fall back to view-facing normal for flat surfaces
+    if (len < 1e-6) {
+        return vec3(0.0, 0.0, 1.0);
+    }
+    normal = normal / len;
+    
+    // Transform to world space
+    mat3 invViewMat = transpose(mat3(viewMat));
+    return invViewMat * normal;
 }
 
 void main() {
-    ivec2 coords = ivec2(gl_FragCoord.xy);
+    float depth = texture(depthTex, texCoord).r;
+    if (depth == 0.0) discard;
     
-    float depth = sampleDepth(coords);
+    gl_FragDepth = projectZ(depth) * 0.5 + 0.5;
     
-    // Discard background
-    if (depth == 0.0) {
-        discard;
-    }
+    float thickness = texture(thicknessTex, texCoord).r * radius;
+    vec3 normal = computeNormal(texCoord);
     
-    // Write proper depth to depth buffer
-    gl_FragDepth = linearToNDC(depth);
-    
-    // Get thickness
-    float thickness = texture(thicknessTex, texCoord).r * particleRadius * absorptionScale;
-    
-    // Compute normal in eye space
-    vec3 normal = computeNormal(coords);
-    if (length(normal) < 0.5) {
-        discard;
-    }
-    
-    // Transform normal to world space
-    vec3 worldNormal = normalize(mat3(invViewMat) * normal);
-    
-    // Eye-space position
-    vec3 posEye = uvToEye(texCoord, depth);
-    vec3 posWorld = (invViewMat * vec4(posEye, 1.0)).xyz;
-    
-    // View direction
-    vec3 viewDir = normalize(eyePos - posWorld);
+    // Beer's law absorption
+    vec3 absorption = vec3(
+        exp(-absorptionCoeff.r * thickness * absorptionScale),
+        exp(-absorptionCoeff.g * thickness * absorptionScale),
+        exp(-absorptionCoeff.b * thickness * absorptionScale)
+    );
+    float alpha = 1.0 - exp(-3.0 * thickness * absorptionScale);
     
     // Diffuse lighting
-    float NdotL = max(0.0, dot(worldNormal, lightDir));
-    float diffuse = NdotL * 0.5 + 0.5;  // Half-lambert for softer look
+    float diffuse = abs(dot(lightDir, normal)) * 0.5 + 0.5;
     
-    // Specular (Blinn-Phong)
-    vec3 halfVec = normalize(lightDir + viewDir);
-    float NdotH = max(0.0, dot(worldNormal, halfVec));
-    float specular = pow(NdotH, specularPower);
+    // Specular (Fresnel)
+    vec3 pos3D = uvToEye(texCoord, depth);
+    mat3 invViewMat = transpose(mat3(viewMat));
+    pos3D = invViewMat * pos3D;
     
-    // Fresnel (Schlick approximation)
-    float NdotV = max(0.0, dot(worldNormal, viewDir));
-    float fresnel = pow(1.0 - NdotV, fresnelPower);
+    vec3 eyePos = -vec3(viewMat[3]) * invViewMat;
+    vec3 viewDir = normalize(eyePos - pos3D);
     
-    // Beer's law absorption - different rates for RGB
-    vec3 absorption = vec3(
-        exp(-absorptionCoeff.x * thickness),
-        exp(-absorptionCoeff.y * thickness),
-        exp(-absorptionCoeff.z * thickness)
-    );
+    float normalReflectance = pow(clamp(dot(normal, lightDir), 0.0, 1.0), specularPower / 10.0);
+    float fresnel = normalReflectance + (1.0 - normalReflectance) * pow(1.0 - abs(dot(normal, viewDir)), fresnelPower);
+    float specular = clamp(0.1 * thickness, 0.0, 1.0) * fresnel;
     
-    // Alpha based on thickness
-    float alpha = 1.0 - exp(-3.0 * thickness);
-    
-    // Combine lighting
-    vec3 baseColor = vec3(0.8, 0.9, 1.0);  // Light blue-white base
-    vec3 color = baseColor * absorption * (ambientStrength + diffuse * (1.0 - ambientStrength));
-    color += vec3(1.0) * specular * 0.5;
-    color += vec3(0.9, 0.95, 1.0) * fresnel * 0.3;
-    
-    fragColor = vec4(color, alpha);
+    vec3 finalColor = (ambientStrength + diffuse * (1.0 - ambientStrength)) * absorption + specular;
+    fragColor = clamp(vec4(finalColor, alpha), 0.0, 1.0);
 }
 )";
+
+//-----------------------------------------------------------------------------
+// Helper functions
+//-----------------------------------------------------------------------------
+
+static GLuint compileComputeShader(const char* source) {
+    GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+    
+    GLint success;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        char log[512];
+        glGetShaderInfoLog(shader, 512, nullptr, log);
+        std::cerr << "Compute shader compilation error: " << log << std::endl;
+        return 0;
+    }
+    
+    GLuint program = glCreateProgram();
+    glAttachShader(program, shader);
+    glLinkProgram(program);
+    
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (!success) {
+        char log[512];
+        glGetProgramInfoLog(program, 512, nullptr, log);
+        std::cerr << "Compute shader link error: " << log << std::endl;
+    }
+    
+    glDeleteShader(shader);
+    return program;
+}
+
+static void checkGLError(const char* location) {
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR) {
+        std::cerr << "OpenGL error at " << location << ": 0x" << std::hex << err << std::dec << std::endl;
+    }
+}
+
+//-----------------------------------------------------------------------------
+// SurfaceRenderer implementation
+//-----------------------------------------------------------------------------
 
 SurfaceRenderer::SurfaceRenderer() {}
 
@@ -387,107 +354,70 @@ bool SurfaceRenderer::init(int maxPts, const PointRenderer::AttribLayout& attrib
     
     // Create fullscreen quad
     float quadVertices[] = {
-        // positions   // texCoords
-        -1.0f,  1.0f,  0.0f, 1.0f,
-        -1.0f, -1.0f,  0.0f, 0.0f,
-         1.0f, -1.0f,  1.0f, 0.0f,
-        -1.0f,  1.0f,  0.0f, 1.0f,
-         1.0f, -1.0f,  1.0f, 0.0f,
-         1.0f,  1.0f,  1.0f, 1.0f
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+         1.0f,  1.0f, 1.0f, 1.0f,
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f,  1.0f, 1.0f, 1.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
     };
     
     glGenVertexArrays(1, &quadVAO);
     glGenBuffers(1, &quadVBO);
+    
     glBindVertexArray(quadVAO);
     glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
+    
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
     glEnableVertexAttribArray(1);
+    
     glBindVertexArray(0);
     
     return true;
 }
 
 void SurfaceRenderer::initShaders() {
-    depthShader = RenderUtils::createShaderProgram(depthVertexShader, depthFragmentShader);
-    thicknessShader = RenderUtils::createShaderProgram(thicknessVertexShader, thicknessFragmentShader);
-    compositeShader = RenderUtils::createShaderProgram(compositeVertexShader, compositeFragmentShader);
-    
-    // Compile curvature flow compute shader
-    GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
-    glShaderSource(shader, 1, &curvatureFlowComputeShader, nullptr);
-    glCompileShader(shader);
-    
-    GLint success;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        char infoLog[1024];
-        glGetShaderInfoLog(shader, 1024, nullptr, infoLog);
-        fprintf(stderr, "Curvature flow compute shader compilation failed:\n%s\n", infoLog);
-    }
-    
-    curvatureFlowCompute = glCreateProgram();
-    glAttachShader(curvatureFlowCompute, shader);
-    glLinkProgram(curvatureFlowCompute);
-    
-    glGetProgramiv(curvatureFlowCompute, GL_LINK_STATUS, &success);
-    if (!success) {
-        char infoLog[1024];
-        glGetProgramInfoLog(curvatureFlowCompute, 1024, nullptr, infoLog);
-        fprintf(stderr, "Curvature flow compute shader linking failed:\n%s\n", infoLog);
-    }
-    
-    glDeleteShader(shader);
+    depthShader = RenderUtils::createShaderProgram(pointSpriteVertexShader, depthFragmentShader);
+    thicknessShader = RenderUtils::createShaderProgram(pointSpriteVertexShader, thicknessFragmentShader);
+    curvatureFlowCompute = compileComputeShader(curvatureFlowComputeShader);
+    compositeShader = RenderUtils::createShaderProgram(fullscreenVertexShader, compositeFragmentShader);
 }
 
 void SurfaceRenderer::initFramebuffers(int width, int height) {
-    if (fbWidth == width && fbHeight == height && depthFBO != 0) {
-        return;
-    }
+    if (fbWidth == width && fbHeight == height) return;
     
     // Cleanup old resources
-    if (depthFBO != 0) {
-        glDeleteFramebuffers(1, &depthFBO);
-        glDeleteFramebuffers(1, &thicknessFBO);
-        glDeleteTextures(1, &depthTexture);
-        glDeleteTextures(1, &depthTexture2);
-        glDeleteTextures(1, &thicknessTexture);
-        glDeleteRenderbuffers(1, &depthRBO);
-    }
+    if (depthFBO) glDeleteFramebuffers(1, &depthFBO);
+    if (thicknessFBO) glDeleteFramebuffers(1, &thicknessFBO);
+    if (depthTexture) glDeleteTextures(1, &depthTexture);
+    if (depthTexture2) glDeleteTextures(1, &depthTexture2);
+    if (thicknessTexture) glDeleteTextures(1, &thicknessTexture);
+    if (depthRBO) glDeleteRenderbuffers(1, &depthRBO);
     
     fbWidth = width;
     fbHeight = height;
     
-    // Depth texture (ping)
-    glGenTextures(1, &depthTexture);
-    glBindTexture(GL_TEXTURE_2D, depthTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, width, height, 0, GL_RED, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    // Create depth textures (ping-pong for curvature flow)
+    auto createR32FTexture = [&]() -> GLuint {
+        GLuint tex;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, width, height, 0, GL_RED, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        return tex;
+    };
     
-    // Depth texture (pong)
-    glGenTextures(1, &depthTexture2);
-    glBindTexture(GL_TEXTURE_2D, depthTexture2);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, width, height, 0, GL_RED, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    depthTexture = createR32FTexture();
+    depthTexture2 = createR32FTexture();
+    thicknessTexture = createR32FTexture();
     
-    // Thickness texture
-    glGenTextures(1, &thicknessTexture);
-    glBindTexture(GL_TEXTURE_2D, thicknessTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, width, height, 0, GL_RED, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    
-    // Depth renderbuffer
+    // Create depth renderbuffer for depth testing
     glGenRenderbuffers(1, &depthRBO);
     glBindRenderbuffer(GL_RENDERBUFFER, depthRBO);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
@@ -498,34 +428,28 @@ void SurfaceRenderer::initFramebuffers(int width, int height) {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, depthTexture, 0);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthRBO);
     
-    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (status != GL_FRAMEBUFFER_COMPLETE) {
-        fprintf(stderr, "SurfaceRenderer: Depth FBO incomplete: 0x%x\n", status);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        std::cerr << "Depth FBO not complete!" << std::endl;
     }
     
-    // Thickness FBO
+    // Thickness FBO (no depth testing needed)
     glGenFramebuffers(1, &thicknessFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, thicknessFBO);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, thicknessTexture, 0);
     
-    status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (status != GL_FRAMEBUFFER_COMPLETE) {
-        fprintf(stderr, "SurfaceRenderer: Thickness FBO incomplete: 0x%x\n", status);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        std::cerr << "Thickness FBO not complete!" << std::endl;
     }
     
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 void SurfaceRenderer::setupParticleVAO(GLuint particleVBO) {
-    if (currentVBO == particleVBO && particleVAO != 0) {
-        return;
-    }
-    
-    if (particleVAO != 0) {
-        glDeleteVertexArrays(1, &particleVAO);
-    }
+    if (currentVBO == particleVBO && particleVAO != 0) return;
     
     currentVBO = particleVBO;
+    
+    if (particleVAO) glDeleteVertexArrays(1, &particleVAO);
     
     glGenVertexArrays(1, &particleVAO);
     glBindVertexArray(particleVAO);
@@ -533,223 +457,205 @@ void SurfaceRenderer::setupParticleVAO(GLuint particleVBO) {
     
     int stride = layout.strideFloats * sizeof(float);
     
-    // Position only
+    // Position (location 0)
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)(layout.posOffset * sizeof(float)));
     glEnableVertexAttribArray(0);
+    
+    // Radius (location 1)
+    if (layout.radiusOffset >= 0) {
+        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, stride, (void*)(layout.radiusOffset * sizeof(float)));
+        glEnableVertexAttribArray(1);
+    }
     
     glBindVertexArray(0);
 }
 
 void SurfaceRenderer::render(Camera* camera, GLuint particleVBO, int particleCount,
-                              const Vec3& lightDir, int width, int height) {
+                             float particleRadius, const Vec3& lightDir, int width, int height) {
     if (!camera || particleCount <= 0) return;
     
+    // Initialize/resize framebuffers if needed
     initFramebuffers(width, height);
     setupParticleVAO(particleVBO);
     
-    // Pass 1: Render particles to depth texture
-    renderDepthPass(camera, particleCount, width, height);
+    // Save current OpenGL state
+    GLint savedViewport[4];
+    glGetIntegerv(GL_VIEWPORT, savedViewport);
+    GLboolean savedBlend = glIsEnabled(GL_BLEND);
+    GLboolean savedDepthTest = glIsEnabled(GL_DEPTH_TEST);
     
-    // Pass 2: Render particles to thickness texture (additive)
-    renderThicknessPass(camera, particleCount, width, height);
+    // Compute actual radii for each pass (matching pysph-cpp)
+    float depthRadius = particleRadius * style.particleScale;
+    float thicknessRadius = particleRadius * style.thicknessScale;
+    
+    // Pass 1: Render depth
+    renderDepthPass(camera, particleCount, depthRadius, width, height);
+    
+    // Pass 2: Render thickness
+    renderThicknessPass(camera, particleCount, thicknessRadius, width, height);
     
     // Pass 3: Curvature flow smoothing
-    runCurvatureFlowCompute(camera, width, height);
+    if (style.smoothingIterations > 0) {
+        runCurvatureFlowCompute(camera, width, height);
+    }
     
     // Pass 4: Final composite
-    renderComposite(camera, lightDir, width, height);
+    renderComposite(camera, particleRadius, lightDir, width, height);
+    
+    // Restore OpenGL state
+    glViewport(savedViewport[0], savedViewport[1], savedViewport[2], savedViewport[3]);
+    if (savedBlend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+    if (savedDepthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
 }
 
-void SurfaceRenderer::renderDepthPass(Camera* camera, int particleCount, int width, int height) {
+void SurfaceRenderer::renderDepthPass(Camera* camera, int particleCount, float radius, int width, int height) {
     glBindFramebuffer(GL_FRAMEBUFFER, depthFBO);
-    glViewport(0, 0, width, height);
+    glViewport(0, 0, fbWidth, fbHeight);
     
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LESS);
-    glDepthMask(GL_TRUE);
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
     glEnable(GL_PROGRAM_POINT_SIZE);
+    glEnable(GL_POINT_SPRITE);
     
     glUseProgram(depthShader);
     
-    // Build matrices
-    float view[16], projection[16];
-    Vec3 camPos = camera->pos;
-    Vec3 camTarget = camera->pos + camera->forward;
-    
-    RenderUtils::buildViewMatrix(view, camPos.x, camPos.y, camPos.z,
-                                 camTarget.x, camTarget.y, camTarget.z,
-                                 camera->up.x, camera->up.y, camera->up.z);
-    
-    float fov = camera->fov * 3.14159f / 180.0f;
-    float aspect = (float)width / height;
-    RenderUtils::buildProjectionMatrix(projection, fov, aspect, camera->nearClip, camera->farClip);
-    
-    glUniformMatrix4fv(glGetUniformLocation(depthShader, "projectionMat"), 1, GL_FALSE, projection);
-    glUniformMatrix4fv(glGetUniformLocation(depthShader, "viewMat"), 1, GL_FALSE, view);
-    glUniform1f(glGetUniformLocation(depthShader, "pointScale"), height * projection[5]);
-    glUniform1f(glGetUniformLocation(depthShader, "particleRadius"), style.particleScale);
+    glUniformMatrix4fv(glGetUniformLocation(depthShader, "viewMat"), 1, GL_FALSE, camera->viewMat);
+    glUniformMatrix4fv(glGetUniformLocation(depthShader, "projMat"), 1, GL_FALSE, camera->projMat);
+    glUniform1f(glGetUniformLocation(depthShader, "pointScale"), height * camera->projMat[5]);
+    glUniform1f(glGetUniformLocation(depthShader, "particleRadius"), radius);
+    glUniform1f(glGetUniformLocation(depthShader, "nearClip"), camera->nearClip);
+    glUniform1f(glGetUniformLocation(depthShader, "farClip"), camera->farClip);
     
     glBindVertexArray(particleVAO);
     glDrawArrays(GL_POINTS, 0, particleCount);
     glBindVertexArray(0);
     
+    glDisable(GL_POINT_SPRITE);
+    glUseProgram(0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-void SurfaceRenderer::renderThicknessPass(Camera* camera, int particleCount, int width, int height) {
+void SurfaceRenderer::renderThicknessPass(Camera* camera, int particleCount, float radius, int width, int height) {
     glBindFramebuffer(GL_FRAMEBUFFER, thicknessFBO);
-    glViewport(0, 0, width, height);
+    glViewport(0, 0, fbWidth, fbHeight);
     
-    // No depth test - we want to accumulate all particles
-    glDisable(GL_DEPTH_TEST);
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     
-    // Additive blending
+    // Additive blending for thickness accumulation
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ONE);
-    
+    glDisable(GL_DEPTH_TEST);
     glEnable(GL_PROGRAM_POINT_SIZE);
+    glEnable(GL_POINT_SPRITE);
     
     glUseProgram(thicknessShader);
     
-    // Build matrices
-    float view[16], projection[16];
-    Vec3 camPos = camera->pos;
-    Vec3 camTarget = camera->pos + camera->forward;
-    
-    RenderUtils::buildViewMatrix(view, camPos.x, camPos.y, camPos.z,
-                                 camTarget.x, camTarget.y, camTarget.z,
-                                 camera->up.x, camera->up.y, camera->up.z);
-    
-    float fov = camera->fov * 3.14159f / 180.0f;
-    float aspect = (float)width / height;
-    RenderUtils::buildProjectionMatrix(projection, fov, aspect, camera->nearClip, camera->farClip);
-    
-    glUniformMatrix4fv(glGetUniformLocation(thicknessShader, "projectionMat"), 1, GL_FALSE, projection);
-    glUniformMatrix4fv(glGetUniformLocation(thicknessShader, "viewMat"), 1, GL_FALSE, view);
-    glUniform1f(glGetUniformLocation(thicknessShader, "pointScale"), height * projection[5]);
-    glUniform1f(glGetUniformLocation(thicknessShader, "particleRadius"), style.thicknessScale);
+    glUniformMatrix4fv(glGetUniformLocation(thicknessShader, "viewMat"), 1, GL_FALSE, camera->viewMat);
+    glUniformMatrix4fv(glGetUniformLocation(thicknessShader, "projMat"), 1, GL_FALSE, camera->projMat);
+    glUniform1f(glGetUniformLocation(thicknessShader, "pointScale"), height * camera->projMat[5]);
+    glUniform1f(glGetUniformLocation(thicknessShader, "particleRadius"), radius);
     
     glBindVertexArray(particleVAO);
     glDrawArrays(GL_POINTS, 0, particleCount);
     glBindVertexArray(0);
     
+    glDisable(GL_POINT_SPRITE);
     glDisable(GL_BLEND);
+    glUseProgram(0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 void SurfaceRenderer::runCurvatureFlowCompute(Camera* camera, int width, int height) {
     glUseProgram(curvatureFlowCompute);
     
-    // Projection matrix values
-    float fov = camera->fov * 3.14159f / 180.0f;
-    float aspect = (float)width / height;
-    float projW = 1.0f / (aspect * tanf(fov * 0.5f));  // projection[0][0]
-    float projH = 1.0f / tanf(fov * 0.5f);             // projection[1][1]
+    // Extract projection parameters from projection matrix
+    float projW = camera->projMat[0];
+    float projH = camera->projMat[5];
     
-    glUniform1f(glGetUniformLocation(curvatureFlowCompute, "width"), (float)width);
-    glUniform1f(glGetUniformLocation(curvatureFlowCompute, "height"), (float)height);
+    glUniform1f(glGetUniformLocation(curvatureFlowCompute, "dt"), style.smoothingDt);
+    glUniform1f(glGetUniformLocation(curvatureFlowCompute, "zContrib"), style.smoothingZContrib);
     glUniform1f(glGetUniformLocation(curvatureFlowCompute, "projW"), projW);
     glUniform1f(glGetUniformLocation(curvatureFlowCompute, "projH"), projH);
-    glUniform1f(glGetUniformLocation(curvatureFlowCompute, "dt"), style.smoothingDt);
-    glUniform1f(glGetUniformLocation(curvatureFlowCompute, "varyingZContrib"), style.smoothingZContrib);
+    glUniform2i(glGetUniformLocation(curvatureFlowCompute, "imageSize"), fbWidth, fbHeight);
     
-    int numGroupsX = (width + 15) / 16;
-    int numGroupsY = (height + 15) / 16;
+    int numGroupsX = (fbWidth + 15) / 16;
+    int numGroupsY = (fbHeight + 15) / 16;
     
-    // Ping-pong iterations
+    // Ping-pong between depth textures
     for (int i = 0; i < style.smoothingIterations; i++) {
-        // Ping: depthTexture -> depthTexture2
+        // Pass 1: depthTexture -> depthTexture2
         glBindImageTexture(0, depthTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
         glBindImageTexture(1, depthTexture2, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
         glDispatchCompute(numGroupsX, numGroupsY, 1);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
         
-        // Pong: depthTexture2 -> depthTexture
+        // Pass 2: depthTexture2 -> depthTexture
         glBindImageTexture(0, depthTexture2, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
         glBindImageTexture(1, depthTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
         glDispatchCompute(numGroupsX, numGroupsY, 1);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
     }
+    
+    glUseProgram(0);
 }
 
-void SurfaceRenderer::renderComposite(Camera* camera, const Vec3& lightDir, int width, int height) {
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, width, height);
-    
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LESS);
-    glDepthMask(GL_TRUE);
-    
-    // Alpha blending for transparent fluid
+void SurfaceRenderer::renderComposite(Camera* camera, float radius, const Vec3& lightDir, int width, int height) {
+    // Render to screen with blending
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_DEPTH_TEST);
     
     glUseProgram(compositeShader);
     
-    // Bind textures
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, depthTexture);
+    // Extract projection parameters
+    float projW = camera->projMat[0];
+    float projH = camera->projMat[5];
+    
     glUniform1i(glGetUniformLocation(compositeShader, "depthTex"), 0);
-    
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, thicknessTexture);
     glUniform1i(glGetUniformLocation(compositeShader, "thicknessTex"), 1);
-    
-    // Projection parameters
-    float fov = camera->fov * 3.14159f / 180.0f;
-    float aspect = (float)width / height;
-    float projW = 1.0f / (aspect * tanf(fov * 0.5f));
-    float projH = 1.0f / tanf(fov * 0.5f);
-    
-    glUniform1f(glGetUniformLocation(compositeShader, "width"), (float)width);
-    glUniform1f(glGetUniformLocation(compositeShader, "height"), (float)height);
-    glUniform1f(glGetUniformLocation(compositeShader, "projW"), projW);
-    glUniform1f(glGetUniformLocation(compositeShader, "projH"), projH);
+    glUniformMatrix4fv(glGetUniformLocation(compositeShader, "viewMat"), 1, GL_FALSE, camera->viewMat);
     glUniform1f(glGetUniformLocation(compositeShader, "nearClip"), camera->nearClip);
     glUniform1f(glGetUniformLocation(compositeShader, "farClip"), camera->farClip);
+    glUniform1f(glGetUniformLocation(compositeShader, "projW"), projW);
+    glUniform1f(glGetUniformLocation(compositeShader, "projH"), projH);
+    glUniform2f(glGetUniformLocation(compositeShader, "windowSize"), (float)width, (float)height);
+    glUniform1f(glGetUniformLocation(compositeShader, "radius"), radius);
     
-    // Inverse view matrix for world-space calculations
-    float view[16], invView[16];
-    Vec3 camPos = camera->pos;
-    Vec3 camTarget = camera->pos + camera->forward;
-    RenderUtils::buildViewMatrix(view, camPos.x, camPos.y, camPos.z,
-                                 camTarget.x, camTarget.y, camTarget.z,
-                                 camera->up.x, camera->up.y, camera->up.z);
-    
-    // Simple inverse for view matrix (transpose of rotation, negate translation)
-    invView[0] = view[0]; invView[1] = view[4]; invView[2] = view[8];  invView[3] = 0;
-    invView[4] = view[1]; invView[5] = view[5]; invView[6] = view[9];  invView[7] = 0;
-    invView[8] = view[2]; invView[9] = view[6]; invView[10] = view[10]; invView[11] = 0;
-    invView[12] = camPos.x; invView[13] = camPos.y; invView[14] = camPos.z; invView[15] = 1;
-    
-    glUniformMatrix4fv(glGetUniformLocation(compositeShader, "invViewMat"), 1, GL_FALSE, invView);
-    
-    // Light and eye position
+    // Transform light direction to view space
     Vec3 normalizedLight = lightDir.normalized();
-    glUniform3f(glGetUniformLocation(compositeShader, "lightDir"),
-                normalizedLight.x, normalizedLight.y, normalizedLight.z);
-    glUniform3f(glGetUniformLocation(compositeShader, "eyePos"), camPos.x, camPos.y, camPos.z);
+    float viewSpaceLightX = camera->viewMat[0] * normalizedLight.x + camera->viewMat[4] * normalizedLight.y + camera->viewMat[8] * normalizedLight.z;
+    float viewSpaceLightY = camera->viewMat[1] * normalizedLight.x + camera->viewMat[5] * normalizedLight.y + camera->viewMat[9] * normalizedLight.z;
+    float viewSpaceLightZ = camera->viewMat[2] * normalizedLight.x + camera->viewMat[6] * normalizedLight.y + camera->viewMat[10] * normalizedLight.z;
+    glUniform3f(glGetUniformLocation(compositeShader, "lightDir"), viewSpaceLightX, viewSpaceLightY, viewSpaceLightZ);
     
-    // Style parameters
-    glUniform3f(glGetUniformLocation(compositeShader, "absorptionCoeff"),
+    // Fluid style parameters
+    glUniform3f(glGetUniformLocation(compositeShader, "absorptionCoeff"), 
                 style.absorptionCoeff.x, style.absorptionCoeff.y, style.absorptionCoeff.z);
     glUniform1f(glGetUniformLocation(compositeShader, "absorptionScale"), style.absorptionScale);
     glUniform1f(glGetUniformLocation(compositeShader, "specularPower"), style.specularPower);
     glUniform1f(glGetUniformLocation(compositeShader, "fresnelPower"), style.fresnelPower);
     glUniform1f(glGetUniformLocation(compositeShader, "ambientStrength"), style.ambientStrength);
-    glUniform1f(glGetUniformLocation(compositeShader, "particleRadius"), style.particleScale);
+    
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, depthTexture);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, thicknessTexture);
     
     glBindVertexArray(quadVAO);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
     
-    glDisable(GL_BLEND);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    
     glUseProgram(0);
+    glDisable(GL_BLEND);
 }
 
 void SurfaceRenderer::cleanup() {
@@ -759,6 +665,7 @@ void SurfaceRenderer::cleanup() {
     
     if (depthFBO) { glDeleteFramebuffers(1, &depthFBO); depthFBO = 0; }
     if (thicknessFBO) { glDeleteFramebuffers(1, &thicknessFBO); thicknessFBO = 0; }
+    
     if (depthTexture) { glDeleteTextures(1, &depthTexture); depthTexture = 0; }
     if (depthTexture2) { glDeleteTextures(1, &depthTexture2); depthTexture2 = 0; }
     if (thicknessTexture) { glDeleteTextures(1, &thicknessTexture); thicknessTexture = 0; }
