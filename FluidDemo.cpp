@@ -19,11 +19,11 @@ FluidDemo::FluidDemo(const FluidDemoDescriptor& desc) {
     layout.lifetimeOffset = 6;
 
     particleRenderer = new PointRenderer();
-    particleRenderer->init(demoDesc.numParticles, layout);
+    particleRenderer->init(demoDesc.numMaxParticles, layout);  // Use maxParticles for buffer size
 
     // Initialize surface renderer (screen-space)
     surfaceRenderer = new SurfaceRenderer();
-    surfaceRenderer->init(demoDesc.numParticles, layout);
+    surfaceRenderer->init(demoDesc.numMaxParticles, layout);  // Use maxParticles for buffer size
 
     // Initialize marching cubes renderer
     marchingCubesRenderer = new MarchingCubesRenderer();
@@ -31,7 +31,7 @@ FluidDemo::FluidDemo(const FluidDemoDescriptor& desc) {
 
     // Initialize marching cubes surface (uses kernel radius for grid spacing)
     marchingCubesSurface = std::make_shared<MarchingCubesSurface>();
-    marchingCubesSurface->initialize(demoDesc.numParticles, demoDesc.kernelRadius, true);
+    marchingCubesSurface->initialize(demoDesc.numMaxParticles, demoDesc.kernelRadius, true);  // Use maxParticles for buffer size
 
     // Initialize mesh renderer
     meshRenderer = new Renderer();
@@ -274,20 +274,13 @@ void FluidDemo::renderUI() {
         if (camera) camera->resetView();
     }
 
-    // Handle particle count change
+    // Handle particle count change (only affects initial count, buffers stay at maxParticles)
     if (particleCountChanged) {
         if (cudaVboResource) {
             cleanupCudaPhysics(cudaVboResource);
             cudaVboResource = nullptr;
         }
-        particleRenderer->resize(demoDesc.numParticles);
-        
-        // Reinitialize marching cubes surface
-        if (marchingCubesSurface) {
-            marchingCubesSurface->free();
-            marchingCubesSurface->initialize(demoDesc.numParticles, demoDesc.kernelRadius, true);
-        }
-        
+        // Buffers are fixed size (maxParticles), so we just reinitialize with new numParticles
         initParticles();
     }
 }

@@ -15,11 +15,22 @@ __device__ inline int hashPosition(const Vec3& pos, float gridSpacing, float wor
     return hashFunction(xi, yi, zi);
 }
 
-__global__ void kernel_fillHash(HashDeviceData data, const float* positions, int stride) 
+__global__ void kernel_fillHash(HashDeviceData data, const float* positions, int stride, const float* active) 
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numPoints) 
         return;
+    
+    // Check if particle is active (if active pointer is provided)
+    if (active != nullptr) {
+        const float* activePtr = active + idx * stride;
+        if (*activePtr <= 0.0f) {
+            // Mark as invalid by setting hash to a sentinel value (will be filtered out)
+            data.hashVals[idx] = HASH_SIZE;  // Invalid hash value
+            data.hashIds[idx] = idx;
+            return;
+        }
+    }
     
     const float* posPtr = positions + idx * stride;
     Vec3 pos(posPtr[0], posPtr[1], posPtr[2]);
@@ -127,7 +138,7 @@ void CudaHash::cleanup()
     }
 }
 
-void CudaHash::fillHash(int numPoints, const float* positions, int stride, float spacing)
+void CudaHash::fillHash(int numPoints, const float* positions, int stride, float spacing, const float* active)
 {
     if (!deviceData)
         return;
@@ -141,19 +152,25 @@ void CudaHash::fillHash(int numPoints, const float* positions, int stride, float
     deviceData->hashCellFirst.resize(HASH_SIZE, false);
     deviceData->hashCellLast.resize(HASH_SIZE, false);
 
-    kernel_fillHash<<<numPoints / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK>>>(*deviceData, positions, stride);
+    int numBlocks = (numPoints + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+    kernel_fillHash<<<numBlocks, THREADS_PER_BLOCK>>>(*deviceData, positions, stride, active);
     cudaCheck(cudaGetLastError());
 
     // Sort by hash
-    thrust::device_ptr<int> hashVals(deviceData->hashVals.buffer);
-    thrust::device_ptr<int> hashIds(deviceData->hashIds.buffer);
-    thrust::sort_by_key(hashVals, hashVals + deviceData->numPoints, hashIds);
+    if (numPoints > 0) {
+        thrust::device_ptr<int> hashVals(deviceData->hashVals.buffer);
+        thrust::device_ptr<int> hashIds(deviceData->hashIds.buffer);
+        thrust::sort_by_key(hashVals, hashVals + numPoints, hashIds);
+    }
 
     deviceData->hashCellFirst.setZero();
     deviceData->hashCellLast.setZero();
 
-    kernel_setupHash<<<numPoints / THREADS_PER_BLOCK + 1, THREADS_PER_BLOCK>>>(*deviceData);
-    cudaCheck(cudaGetLastError());
+    if (numPoints > 0) {
+        int numBlocks = (numPoints + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+        kernel_setupHash<<<numBlocks, THREADS_PER_BLOCK>>>(*deviceData);
+        cudaCheck(cudaGetLastError());
+    }
 }
 
 void CudaHash::findNeighbors(int numPoints, const float* positions, int stride)

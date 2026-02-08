@@ -812,6 +812,12 @@ int main(int argc, char** argv) {
     fluidDemo->setName("Fluid");
     demos.push_back(std::move(fluidDemo));
     
+    FluidDemoDescriptor tunnelDesc;
+    tunnelDesc.setupTunnelScene();
+    auto tunnelDemo = std::make_unique<FluidDemo>(tunnelDesc);
+    tunnelDemo->setName("Tunnel");
+    demos.push_back(std::move(tunnelDemo));
+    
     // Set camera for 3D demos
     for (auto& demo : demos) {
         if (demo->is3D()) {

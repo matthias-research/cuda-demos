@@ -16,19 +16,27 @@
 #include <vector>
 
 static const int VBO_STRIDE = 8;  // pos(3), color(3), lifetime(1), pad(1)
+static const int VBO_POS = 0;
+static const int VBO_COLOR = 3;
+static const int VBO_LIFETIME = 6;
 
 // Device data structure - all simulation state on GPU
 struct FluidDeviceData {
     void free() {
         numParticles = 0;
+        maxParticles = 0;
         vel.free();
         prevPos.free();
         posCorr.free();
         density.free();
         raycastHit.free();
+        intBuffer.free();
+        sourceParticlePos.free();
+        sourceParticleVel.free();
     }
 
     int numParticles = 0;
+    int maxParticles = 0;
     float particleRadius = 0.2f;
     float kernelRadius = 0.6f;     // SPH kernel support radius (h)
     float poly6Scale = 0.0f;       // Precomputed: 315 / (64 * π * h^9)
@@ -41,8 +49,16 @@ struct FluidDeviceData {
     DeviceBuffer<Vec3> posCorr;
     DeviceBuffer<float> density;   // Per-particle density estimate
     DeviceBuffer<float> raycastHit;
-    
+    DeviceBuffer<int> intBuffer;
+    DeviceBuffer<Vec3> sourceParticlePos;
+    DeviceBuffer<Vec3> sourceParticleVel;
+
     float* vboData = nullptr;
+
+    OBB sourceBounds = OBB(Transform(Identity), Vec3(10.0f, 20.0f, 10.0f));
+    float sourceSpeed = 10.0f;
+    float sourceDensity = 1.0f;
+    OBB sinkBounds = OBB(Transform(Identity), Vec3(Zero));
 };
 
 
@@ -385,7 +401,7 @@ __global__ void kernel_deriveVelocity(FluidDeviceData data, float dt) {
 }
 
 
-// Initialize particles
+// Initialize particles (only initializes particles where idx < numParticles)
 __global__ void kernel_initParticles(
     FluidDeviceData data,
     Bounds3 spawnBounds,
@@ -393,7 +409,7 @@ __global__ void kernel_initParticles(
     float gridSpacing, unsigned long seed)
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (idx >= data.numParticles) return;
+    if (idx >= data.numParticles) return;  // Only initialize active particles, not all buffer slots
 
     // Fast pseudo-random
     unsigned int hash = idx + seed;
@@ -436,6 +452,83 @@ __global__ void kernel_initParticles(
     #undef FRAND
 }
 
+__global__ void kernel_handleSink(FluidDeviceData data) 
+{
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx >= data.numParticles) return;
+
+    float* particleData = data.vboData + idx * VBO_STRIDE;
+    Vec3 pos(particleData[0], particleData[1], particleData[2]);
+
+    // no sink
+    if (data.sinkBounds.halfExtents.isZero()) 
+        return;
+
+    Vec3 localPos = data.sinkBounds.trans.transformInv(pos);
+    Vec3 halfExtents = data.sinkBounds.halfExtents;
+    bool isInside = (localPos.x < -halfExtents.x || localPos.x > halfExtents.x ||
+        localPos.y < -halfExtents.y || localPos.y > halfExtents.y ||
+        localPos.z < -halfExtents.z || localPos.z > halfExtents.z);
+
+    if (isInside)
+        particleData[VBO_LIFETIME] = 0.0f;
+}
+
+__global__ void kernel_findSlots(FluidDeviceData data) 
+{
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx >= data.numParticles) return;
+
+    float lifeTime = data.vboData[idx * VBO_STRIDE + VBO_LIFETIME];
+
+    if (lifeTime == 0.0f) 
+        data.intBuffer[idx] = 1;
+}
+
+__global__ void kernel_addSourceParticles(FluidDeviceData data, int numParticlesToAdd, int numSlots, Vec3 color, float lifetime) 
+{
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    float* particleData = data.vboData + idx * VBO_STRIDE;
+    
+    // Handle filling empty slots within existing numParticles range
+    if (idx < data.numParticles)
+    {
+        float lifeTime = data.vboData[idx * VBO_STRIDE + VBO_LIFETIME];
+        if (lifeTime == 0.0f) 
+        { // empty slot - fill it if we have source particles left
+            int slotIndex = data.intBuffer[idx];  // Which slot number this is (0 to numSlots-1)
+            if (slotIndex < numParticlesToAdd) {
+                int sourceIdx = slotIndex;
+                particleData[VBO_POS] = data.sourceParticlePos[sourceIdx].x;
+                particleData[VBO_POS + 1] = data.sourceParticlePos[sourceIdx].y;
+                particleData[VBO_POS + 2] = data.sourceParticlePos[sourceIdx].z;
+                particleData[VBO_COLOR] = color.x;
+                particleData[VBO_COLOR + 1] = color.y;
+                particleData[VBO_COLOR + 2] = color.z;
+                particleData[VBO_LIFETIME] = lifetime;
+                data.vel[idx] = data.sourceParticleVel[sourceIdx];
+            }
+        }
+    }
+    // Handle overflow: new particles beyond numParticles (but within maxParticles)
+    else if (idx < data.maxParticles) {
+        int overflowIdx = idx - data.numParticles;
+        int sourceIdx = numSlots + overflowIdx;
+        
+        // Only add if we haven't exceeded numParticlesToAdd
+        if (sourceIdx < numParticlesToAdd) {
+            particleData[VBO_POS] = data.sourceParticlePos[sourceIdx].x;
+            particleData[VBO_POS + 1] = data.sourceParticlePos[sourceIdx].y;
+            particleData[VBO_POS + 2] = data.sourceParticlePos[sourceIdx].z;
+            particleData[VBO_COLOR] = color.x;
+            particleData[VBO_COLOR + 1] = color.y;
+            particleData[VBO_COLOR + 2] = color.z;
+            particleData[VBO_LIFETIME] = lifetime;
+            data.vel[idx] = data.sourceParticleVel[sourceIdx];
+        }
+    }
+}
+
 
 //-----------------------------------------------------------------------------
 // Host functions
@@ -462,11 +555,18 @@ void FluidDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
     meshes->initialize(scene);
     hash->initialize();
 
-    deviceData->numParticles = demoDesc.numParticles;
+    deviceData->maxParticles = demoDesc.numMaxParticles;
+    deviceData->numParticles = demoDesc.numParticles;  // Can be 0 to start empty
     deviceData->particleRadius = demoDesc.particleRadius;
     deviceData->kernelRadius = demoDesc.kernelRadius;
     deviceData->worldOrig = -100.0f;
     deviceData->gridSpacing = demoDesc.kernelRadius;  // Grid spacing = kernel radius for neighbor search
+    
+    // Copy source and sink bounds from descriptor
+    deviceData->sourceBounds = demoDesc.sourceBounds;
+    deviceData->sinkBounds = demoDesc.sinkBounds;
+    deviceData->sourceSpeed = demoDesc.sourceSpeed;
+    deviceData->sourceDensity = demoDesc.sourceDensity;
 
     // Precompute Poly6 kernel scale: 315 / (64 * π * h^9)
     float h = demoDesc.kernelRadius;
@@ -515,10 +615,11 @@ void FluidDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
         printf("FluidDemo: Marching cubes threshold=%.6f\n", threshold);
     }
 
-    deviceData->vel.resize(demoDesc.numParticles, false);
-    deviceData->prevPos.resize(demoDesc.numParticles, false);
-    deviceData->posCorr.resize(demoDesc.numParticles, false);
-    deviceData->density.resize(demoDesc.numParticles, false);
+    // Initialize all buffers to maxParticles size (fixed buffer)
+    deviceData->vel.resize(demoDesc.numMaxParticles, false);
+    deviceData->prevPos.resize(demoDesc.numMaxParticles, false);
+    deviceData->posCorr.resize(demoDesc.numMaxParticles, false);
+    deviceData->density.resize(demoDesc.numMaxParticles, false);
 
     deviceData->vel.setZero();
 
@@ -532,7 +633,7 @@ void FluidDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
 
     deviceData->vboData = d_vboData;
 
-    // Calculate grid layout
+    // Calculate grid layout (only used if numParticles > 0)
     float gridSpacing = 2.0f * demoDesc.particleRadius;
     Vec3 spawnSize = demoDesc.spawnBounds.maximum - demoDesc.spawnBounds.minimum;
     float usableWidth = spawnSize.x - 2.0f * gridSpacing;
@@ -543,13 +644,18 @@ void FluidDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
     if (particlesPerCol < 1) particlesPerCol = 1;
     int particlesPerLayer = particlesPerRow * particlesPerCol;
 
-    int numBlocks = (demoDesc.numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-    printf("FluidDemo: Initializing %d particles\n", demoDesc.numParticles);
+    // Only initialize particles if numParticles > 0
+    if (deviceData->numParticles > 0) {
+        int numBlocks = (deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+        printf("FluidDemo: Initializing %d particles (max capacity: %d)\n", deviceData->numParticles, deviceData->maxParticles);
 
-    kernel_initParticles<<<numBlocks, THREADS_PER_BLOCK>>>(
-        *deviceData, demoDesc.spawnBounds,
-        particlesPerLayer, particlesPerRow, particlesPerCol,
-        gridSpacing, (unsigned long)time(nullptr));
+        kernel_initParticles<<<numBlocks, THREADS_PER_BLOCK>>>(
+            *deviceData, demoDesc.spawnBounds,
+            particlesPerLayer, particlesPerRow, particlesPerCol,
+            gridSpacing, (unsigned long)time(nullptr));
+    } else {
+        printf("FluidDemo: Starting with 0 particles (max capacity: %d)\n", deviceData->maxParticles);
+    }
 
     // Generate initial marching cubes surface so it's visible before simulation starts
     if (marchingCubesSurface) {
@@ -560,11 +666,85 @@ void FluidDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
 }
 
 
+void FluidDemo::handleSourceAndSink() 
+{
+    // delete particles that are inside the sink
+
+    if (deviceData->numParticles > 0)
+    {
+        kernel_handleSink << <(deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK >> > (*deviceData);
+        cudaCheck(cudaGetLastError());
+    }
+
+    // add source particles
+
+    sourceParticlePos.clear();
+    sourceParticleVel.clear();
+    float sizeY = deviceData->sourceBounds.halfExtents.y;
+    float sizeZ = deviceData->sourceBounds.halfExtents.z;
+
+    float r = deviceData->particleRadius;
+    int numY = (int)(sizeY / r);
+    int numZ = (int)(sizeZ / r);
+    Vec3 localVel = Vec3(deviceData->sourceSpeed, 0.0f, 0.0f);
+    Vec3 worldVel = deviceData->sourceBounds.trans.rotate(localVel);
+
+    for (int yi = -numY; yi <= numY; yi++) {
+        for (int zi = -numZ; zi <= numZ; zi++) {
+            Vec3 localPos = Vec3(0.0f, yi * r, zi * r);
+            Vec3 worldPos = deviceData->sourceBounds.trans.transform(localPos);
+            sourceParticlePos.push_back(worldPos);
+        }
+    }
+
+    if (sourceParticlePos.empty())
+        return;
+
+    sourceParticleVel.resize(sourceParticlePos.size(), worldVel);
+
+    deviceData->sourceParticlePos.set(sourceParticlePos);
+    deviceData->sourceParticleVel.set(sourceParticleVel);
+
+    int numSlots = 0;
+
+    if (deviceData->numParticles > 0)
+    {
+        // fill into empty slots
+        // intBuffer needs to be at least numParticles + 1 for the exclusive scan
+        int intBufferSize = deviceData->numParticles + 1;
+        if (deviceData->intBuffer.size < intBufferSize) {
+            deviceData->intBuffer.resize(intBufferSize, false);
+        }
+        deviceData->intBuffer.setZero();
+
+        kernel_findSlots << <(deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK >> > (*deviceData);
+        cudaCheck(cudaGetLastError());
+
+        thrust::device_ptr<int> firstSlot(deviceData->intBuffer.buffer);
+        thrust::exclusive_scan(firstSlot, firstSlot + deviceData->numParticles + 1, firstSlot);
+
+        deviceData->intBuffer.getDeviceObject(numSlots, deviceData->numParticles);
+    }
+
+    // Calculate how many new particles we can add (limited by maxParticles)
+    int availableSlots = numSlots + (deviceData->maxParticles - deviceData->numParticles);
+    int numParticlesToAdd = Min((int)sourceParticlePos.size(), availableSlots);
+    
+    // Update numParticles if we're adding more than available slots
+    if (numParticlesToAdd > numSlots) {
+        deviceData->numParticles = Min(deviceData->numParticles + (numParticlesToAdd - numSlots), deviceData->maxParticles);
+    }
+
+    Vec3 color = Vec3(1.0f, 0.0f, 0.0f);
+    float lifetime = 1.0f;
+
+    // Launch kernel with enough threads to cover up to maxParticles
+    kernel_addSourceParticles<<<(deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*deviceData, numParticlesToAdd, numSlots, color, lifetime);
+    cudaCheck(cudaGetLastError());
+}
+
+
 void FluidDemo::updateCudaPhysics(float dt, cudaGraphicsResource* vboResource) {
-    if (deviceData->numParticles == 0) return;
-
-    int numBlocks = (deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-
     float* d_vboData;
     size_t numBytes;
     cudaGraphicsMapResources(1, &vboResource, 0);
@@ -572,8 +752,19 @@ void FluidDemo::updateCudaPhysics(float dt, cudaGraphicsResource* vboResource) {
 
     deviceData->vboData = d_vboData;
 
-    // Recompute spatial hash
-    hash->fillHash(deviceData->numParticles, deviceData->vboData, VBO_STRIDE, deviceData->gridSpacing);
+    // Handle source and sink (create new particles, remove particles in sink)
+    handleSourceAndSink();
+
+    if (deviceData->numParticles == 0) {
+        cudaGraphicsUnmapResources(1, &vboResource, 0);
+        return;
+    }
+
+    int numBlocks = (deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+
+    // Recompute spatial hash (pass lifetime as active filter)
+    const float* lifetimePtr = deviceData->vboData + VBO_LIFETIME;
+    hash->fillHash(deviceData->numParticles, deviceData->vboData, VBO_STRIDE, deviceData->gridSpacing, lifetimePtr);
 
     int numSubSteps = 5;
     float sdt = dt / (float)numSubSteps;

@@ -23,12 +23,20 @@ enum class FluidRenderMode {
     MarchingCubes       // Marching cubes mesh
 };
 
-struct FluidDemoDescriptor {
+struct FluidDemoDescriptor 
+{
+    // Physics
     int numParticles = 100000;
+    int numMaxParticles = 1000000;
     float gravity = 9.8f;
     float particleRadius = 0.2f;
     float kernelRadius = 0.6f;   // SPH kernel support radius (h)
     float maxVelocity = 100.0f;
+
+    OBB sourceBounds = OBB(Transform(Identity), Vec3(10.0f, 20.0f, 10.0f));
+    float sourceSpeed = 10.0f;
+    float sourceDensity = 1.0f;
+    OBB sinkBounds = OBB(Transform(Identity), Vec3(Zero));
 
     std::string meshName = "";
     Bounds3 sceneBounds = Bounds3(Vec3(-50.0f, 0.0f, -50.0f), Vec3(50.0f, 100.0f, 50.0f));
@@ -72,6 +80,58 @@ struct FluidDemoDescriptor {
         cameraPos = Vec3(0.0f, 30.0f, 60.0f);
         cameraLookAt = Vec3(0.0f, 30.0f, 0.0f);
     }
+
+    void setupTunnelScene() {
+        // Start with no particles - they'll be created by the source
+        numParticles = 0;
+        numMaxParticles = 500000;  // Max capacity for particles
+        
+        // Physics settings
+        gravity = 0.0f;  // No gravity in wind tunnel
+        particleRadius = 0.2f;
+        kernelRadius = 0.6f;
+        maxVelocity = 100.0f;
+        
+        // Tunnel dimensions: long box along X-axis (smaller for fewer particles)
+        float tunnelLength = 50.0f;  // Total length
+        float tunnelHeight = 5.0f;   // Y dimension
+        float tunnelWidth = 5.0f;    // Z dimension
+        
+        // Scene bounds: tunnel extends from -tunnelLength/2 to +tunnelLength/2 along X
+        sceneBounds = Bounds3(
+            Vec3(-tunnelLength / 2.0f, -tunnelHeight / 2.0f, -tunnelWidth / 2.0f),
+            Vec3(tunnelLength / 2.0f, tunnelHeight / 2.0f, tunnelWidth / 2.0f)
+        );
+        
+        // Spawn bounds not used when starting with 0 particles, but set to source area
+        spawnBounds = Bounds3(
+            Vec3(-tunnelLength / 2.0f - 1.0f, -tunnelHeight / 2.0f, -tunnelWidth / 2.0f),
+            Vec3(-tunnelLength / 2.0f + 1.0f, tunnelHeight / 2.0f, tunnelWidth / 2.0f)
+        );
+        
+        // Source at negative X end (inlet) - covers the cross-section
+        float sourceThickness = 1.0f;  // Thin source plane
+        Vec3 sourceCenter = Vec3(-tunnelLength / 2.0f, 0.0f, 0.0f);
+        Vec3 sourceHalfExtents = Vec3(sourceThickness / 2.0f, tunnelHeight / 2.0f, tunnelWidth / 2.0f);
+        sourceBounds = OBB(Transform(sourceCenter, Quat(Identity)), sourceHalfExtents);
+        sourceSpeed = 20.0f;  // Particles shoot into tunnel at this speed
+        sourceDensity = 1.0f;
+        
+        // Sink at positive X end (outlet) - covers the cross-section
+        float sinkThickness = 1.0f;  // Thin sink plane
+        Vec3 sinkCenter = Vec3(tunnelLength / 2.0f, 0.0f, 0.0f);
+        Vec3 sinkHalfExtents = Vec3(sinkThickness / 2.0f, tunnelHeight / 2.0f, tunnelWidth / 2.0f);
+        sinkBounds = OBB(Transform(sinkCenter, Quat(Identity)), sinkHalfExtents);
+        
+        // Camera positioned to view the tunnel from the side
+        cameraPos = Vec3(0.0f, 10.0f, 20.0f);
+        cameraLookAt = Vec3(0.0f, 0.0f, 0.0f);
+        cameraNear = 0.1f;
+        cameraFar = 1000.0f;
+        
+        // No mesh walls (user will add obstacles later)
+        meshName = "";
+    }
 };
 
 
@@ -109,6 +169,7 @@ public:
 private:
     void ensureSceneLoaded();
     void initParticles();
+    void handleSourceAndSink();
 
     FluidDemoDescriptor demoDesc;
     std::string customName = "Fluid Demo";
@@ -128,6 +189,9 @@ private:
     std::shared_ptr<FluidDeviceData> deviceData = nullptr;
     std::shared_ptr<CudaMeshes> meshes = nullptr;
     std::shared_ptr<CudaHash> hash = nullptr;
+
+    std::vector<Vec3> sourceParticlePos;
+    std::vector<Vec3> sourceParticleVel;
 
     // Performance tracking
     float lastUpdateTime = 0.0f;

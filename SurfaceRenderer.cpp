@@ -13,6 +13,7 @@
 static const char* pointSpriteVertexShader = R"(
 #version 430 core
 layout (location = 0) in vec3 aPos;
+layout (location = 4) in float aLifetime;  // Lifetime attribute
 
 uniform mat4 viewMat;
 uniform mat4 projMat;
@@ -21,12 +22,14 @@ uniform float particleRadius;  // Base particle radius (uniform)
 
 out vec3 eyePos;
 out float radius;
+out float lifetime;
 
 void main() {
     vec4 eyeSpacePos = viewMat * vec4(aPos, 1.0);
     gl_Position = projMat * eyeSpacePos;
     eyePos = eyeSpacePos.xyz;
     radius = particleRadius;
+    lifetime = aLifetime;
     
     float dist = length(eyeSpacePos.xyz);
     gl_PointSize = radius * (pointScale / dist);
@@ -41,6 +44,7 @@ uniform float farClip;
 
 in vec3 eyePos;
 in float radius;
+in float lifetime;
 
 out float fragDepth;
 
@@ -49,6 +53,8 @@ float projectZ(float z) {
 }
 
 void main() {
+    if (lifetime <= 0.0) discard;  // Discard particles with zero or negative lifetime
+    
     vec2 coord = gl_PointCoord * 2.0 - 1.0;
     float r2 = dot(coord, coord);
     if (r2 > 1.0) discard;
@@ -64,9 +70,13 @@ void main() {
 // Thickness fragment shader - additive blending
 static const char* thicknessFragmentShader = R"(
 #version 430 core
+in float lifetime;
+
 out float fragThickness;
 
 void main() {
+    if (lifetime <= 0.0) discard;  // Discard particles with zero or negative lifetime
+    
     vec2 coord = gl_PointCoord * 2.0 - 1.0;
     float r2 = dot(coord, coord);
     if (r2 > 1.0) discard;

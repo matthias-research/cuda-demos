@@ -49,7 +49,7 @@ public:
     void initialize();
     void cleanup();
 
-    void fillHash(int numPoints, const float* positions, int stride, float spacing);
+    void fillHash(int numPoints, const float* positions, int stride, float spacing, const float* active = nullptr);
     void findNeighbors(int numPoints, const float* positions, int stride);
 
     const std::shared_ptr<HashDeviceData>& getDeviceData() const { return deviceData; }
