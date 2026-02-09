@@ -121,15 +121,6 @@ __global__ void kernel_createParticleCubes(MarchingCubesSurfaceDeviceData data, 
         return;
     
     const float* posPtr = positions + pNr * stride;
-    
-    // Check lifetime (at offset 6 in VBO_STRIDE = 8 layout)
-    float lifetime = (stride > 6) ? posPtr[6] : 1.0f;
-    if (lifetime <= 0.0f) {
-        // Mark as invalid by setting hash to 0 (will be filtered out)
-        data.cubeHashes[pNr] = 0;
-        return;
-    }
-    
     Vec3 pos(posPtr[0], posPtr[1], posPtr[2]);
     
     int xi, yi, zi;
@@ -282,12 +273,6 @@ __global__ void kernel_addParticleDensities(MarchingCubesSurfaceDeviceData data,
         return;
 
     const float* posPtr = positions + pNr * stride;
-    
-    // Check lifetime (at offset 6 in VBO_STRIDE = 8 layout)
-    float lifetime = (stride > 6) ? posPtr[6] : 1.0f;
-    if (lifetime <= 0.0f) 
-        return;
-    
     Vec3 pos(posPtr[0], posPtr[1], posPtr[2]);
 
     float h_rad = 1.5f * data.gridSpacing;

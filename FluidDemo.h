@@ -169,7 +169,8 @@ public:
 private:
     void ensureSceneLoaded();
     void initParticles();
-    void handleSourceAndSink();
+    void removeParticles();
+    void addParticles();
 
     FluidDemoDescriptor demoDesc;
     std::string customName = "Fluid Demo";

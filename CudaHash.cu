@@ -15,22 +15,11 @@ __device__ inline int hashPosition(const Vec3& pos, float gridSpacing, float wor
     return hashFunction(xi, yi, zi);
 }
 
-__global__ void kernel_fillHash(HashDeviceData data, const float* positions, int stride, const float* active) 
+__global__ void kernel_fillHash(HashDeviceData data, const float* positions, int stride) 
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numPoints) 
         return;
-    
-    // Check if particle is active (if active pointer is provided)
-    if (active != nullptr) {
-        const float* activePtr = active + idx * stride;
-        if (*activePtr <= 0.0f) {
-            // Mark as invalid by setting hash to a sentinel value (will be filtered out)
-            data.hashVals[idx] = HASH_SIZE;  // Invalid hash value
-            data.hashIds[idx] = idx;
-            return;
-        }
-    }
     
     const float* posPtr = positions + idx * stride;
     Vec3 pos(posPtr[0], posPtr[1], posPtr[2]);
@@ -138,7 +127,7 @@ void CudaHash::cleanup()
     }
 }
 
-void CudaHash::fillHash(int numPoints, const float* positions, int stride, float spacing, const float* active)
+void CudaHash::fillHash(int numPoints, const float* positions, int stride, float spacing)
 {
     if (!deviceData)
         return;
@@ -153,7 +142,7 @@ void CudaHash::fillHash(int numPoints, const float* positions, int stride, float
     deviceData->hashCellLast.resize(HASH_SIZE, false);
 
     int numBlocks = (numPoints + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-    kernel_fillHash<<<numBlocks, THREADS_PER_BLOCK>>>(*deviceData, positions, stride, active);
+    kernel_fillHash<<<numBlocks, THREADS_PER_BLOCK>>>(*deviceData, positions, stride);
     cudaCheck(cudaGetLastError());
 
     // Sort by hash

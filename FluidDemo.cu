@@ -31,6 +31,8 @@ struct FluidDeviceData {
         density.free();
         raycastHit.free();
         intBuffer.free();
+        intBuffer2.free();
+        intBuffer3.free();
         sourceParticlePos.free();
         sourceParticleVel.free();
     }
@@ -50,6 +52,8 @@ struct FluidDeviceData {
     DeviceBuffer<float> density;   // Per-particle density estimate
     DeviceBuffer<float> raycastHit;
     DeviceBuffer<int> intBuffer;
+    DeviceBuffer<int> intBuffer2;
+    DeviceBuffer<int> intBuffer3;
     DeviceBuffer<Vec3> sourceParticlePos;
     DeviceBuffer<Vec3> sourceParticleVel;
 
@@ -452,81 +456,93 @@ __global__ void kernel_initParticles(
     #undef FRAND
 }
 
-__global__ void kernel_handleSink(FluidDeviceData data) 
+__global__ void kernel_markParticlesForRemoval(FluidDeviceData data) 
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numParticles) return;
 
     float* particleData = data.vboData + idx * VBO_STRIDE;
     Vec3 pos(particleData[0], particleData[1], particleData[2]);
+    bool remove = false;
 
-    // no sink
-    if (data.sinkBounds.halfExtents.isZero()) 
-        return;
+    // test lifetime
+    if (particleData[VBO_LIFETIME] == 0.0f)
+        remove = true;
 
-    Vec3 localPos = data.sinkBounds.trans.transformInv(pos);
-    Vec3 halfExtents = data.sinkBounds.halfExtents;
-    bool isInside = (localPos.x < -halfExtents.x || localPos.x > halfExtents.x ||
-        localPos.y < -halfExtents.y || localPos.y > halfExtents.y ||
-        localPos.z < -halfExtents.z || localPos.z > halfExtents.z);
+    // test sink
+    if (!data.sinkBounds.halfExtents.isZero()) 
+    {
+        Vec3 localPos = data.sinkBounds.trans.transformInv(pos);
+        Vec3 halfExtents = data.sinkBounds.halfExtents;
+        bool isInside = (localPos.x < -halfExtents.x || localPos.x > halfExtents.x ||
+            localPos.y < -halfExtents.y || localPos.y > halfExtents.y ||
+            localPos.z < -halfExtents.z || localPos.z > halfExtents.z);
 
-    if (isInside)
-        particleData[VBO_LIFETIME] = 0.0f;
+        if (isInside)
+            remove = true;
+    }
+
+    if (remove)
+        data.intBuffer[idx] = 1;
+    else
+        data.intBuffer2[idx] = 1;
 }
 
-__global__ void kernel_findSlots(FluidDeviceData data) 
+__global__ void kernel_listFullSlots(FluidDeviceData data, int numFullSlots) 
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx >= data.numParticles) return;
 
-    float lifeTime = data.vboData[idx * VBO_STRIDE + VBO_LIFETIME];
-
-    if (lifeTime == 0.0f) 
-        data.intBuffer[idx] = 1;
+    if (data.intBuffer2[idx + 1] > data.intBuffer2[idx]) // a full slot
+    {
+        int slotNumber = data.intBuffer2[idx];
+        data.intBuffer3[numFullSlots - slotNumber - 1] = idx; // reverse order, consume from the end
+    }
 }
 
-__global__ void kernel_addSourceParticles(FluidDeviceData data, int numParticlesToAdd, int numSlots, Vec3 color, float lifetime) 
+__global__ void kernel_fillEmptySlots(FluidDeviceData data, int numFullSlots) 
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    float* particleData = data.vboData + idx * VBO_STRIDE;
+    if (idx >= data.numParticles) return;
+
+    if (data.intBuffer2[idx + 1] > data.intBuffer2[idx]) // full slot
+        return;
+
+    int emptySlotNumber = data.intBuffer[idx];
+    int fullSlotNumber = data.intBuffer3[emptySlotNumber];
+
+    if (fullSlotNumber >= numFullSlots)
+        return;
+
+    // copy from source to empty slot
+    float* emptyParticleData = data.vboData + emptySlotNumber * VBO_STRIDE;
+    float* fullParticleData = data.vboData + fullSlotNumber * VBO_STRIDE;
+    for (int i = 0; i < VBO_STRIDE; i++)
+        emptyParticleData[i] = fullParticleData[i];
+
+    data.vel[emptySlotNumber] = data.vel[fullSlotNumber];
+}
+
+
+__global__ void kernel_addSourceParticles(FluidDeviceData data, int numSourceParticles, Vec3 color, float lifetime) 
+{
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+
+    if (idx >= numSourceParticles) 
+        return;
+
+    int sourceIdx = idx;
+    int destIdx = data.numParticles + idx;
     
-    // Handle filling empty slots within existing numParticles range
-    if (idx < data.numParticles)
-    {
-        float lifeTime = data.vboData[idx * VBO_STRIDE + VBO_LIFETIME];
-        if (lifeTime == 0.0f) 
-        { // empty slot - fill it if we have source particles left
-            int slotIndex = data.intBuffer[idx];  // Which slot number this is (0 to numSlots-1)
-            if (slotIndex < numParticlesToAdd) {
-                int sourceIdx = slotIndex;
-                particleData[VBO_POS] = data.sourceParticlePos[sourceIdx].x;
-                particleData[VBO_POS + 1] = data.sourceParticlePos[sourceIdx].y;
-                particleData[VBO_POS + 2] = data.sourceParticlePos[sourceIdx].z;
-                particleData[VBO_COLOR] = color.x;
-                particleData[VBO_COLOR + 1] = color.y;
-                particleData[VBO_COLOR + 2] = color.z;
-                particleData[VBO_LIFETIME] = lifetime;
-                data.vel[idx] = data.sourceParticleVel[sourceIdx];
-            }
-        }
-    }
-    // Handle overflow: new particles beyond numParticles (but within maxParticles)
-    else if (idx < data.maxParticles) {
-        int overflowIdx = idx - data.numParticles;
-        int sourceIdx = numSlots + overflowIdx;
-        
-        // Only add if we haven't exceeded numParticlesToAdd
-        if (sourceIdx < numParticlesToAdd) {
-            particleData[VBO_POS] = data.sourceParticlePos[sourceIdx].x;
-            particleData[VBO_POS + 1] = data.sourceParticlePos[sourceIdx].y;
-            particleData[VBO_POS + 2] = data.sourceParticlePos[sourceIdx].z;
-            particleData[VBO_COLOR] = color.x;
-            particleData[VBO_COLOR + 1] = color.y;
-            particleData[VBO_COLOR + 2] = color.z;
-            particleData[VBO_LIFETIME] = lifetime;
-            data.vel[idx] = data.sourceParticleVel[sourceIdx];
-        }
-    }
+    float* particleData = data.vboData + destIdx * VBO_STRIDE;
+    particleData[VBO_POS] = data.sourceParticlePos[sourceIdx].x;
+    particleData[VBO_POS + 1] = data.sourceParticlePos[sourceIdx].y;
+    particleData[VBO_POS + 2] = data.sourceParticlePos[sourceIdx].z;
+    particleData[VBO_COLOR] = color.x;
+    particleData[VBO_COLOR + 1] = color.y;
+    particleData[VBO_COLOR + 2] = color.z;
+    particleData[VBO_LIFETIME] = lifetime;
+    data.vel[destIdx] = data.sourceParticleVel[sourceIdx];
 }
 
 
@@ -666,16 +682,50 @@ void FluidDemo::initCudaPhysics(GLuint vbo, cudaGraphicsResource** vboResource, 
 }
 
 
-void FluidDemo::handleSourceAndSink() 
+void FluidDemo::removeParticles() 
 {
-    // delete particles that are inside the sink
+    if (deviceData->numParticles == 0)
+        return;
 
-    if (deviceData->numParticles > 0)
+    deviceData->intBuffer.resize(deviceData->numParticles + 1, false);
+    deviceData->intBuffer.setZero();
+
+    deviceData->intBuffer2.resize(deviceData->numParticles + 1, false);
+    deviceData->intBuffer2.setZero();
+
+    kernel_markParticlesForRemoval << <(deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK >> > (*deviceData);
+    cudaCheck(cudaGetLastError());
+
+    thrust::device_ptr<int> firstEmptySlot(deviceData->intBuffer.buffer);
+    thrust::exclusive_scan(firstEmptySlot, firstEmptySlot + deviceData->numParticles + 1, firstEmptySlot);
+
+    int numEmptySlots = 0; 
+    deviceData->intBuffer.getDeviceObject(numEmptySlots, deviceData->numParticles);
+
+    if (numEmptySlots == 0)
+        return;
+
+    thrust::device_ptr<int> firstFullSlot(deviceData->intBuffer2.buffer);
+    thrust::exclusive_scan(firstFullSlot, firstFullSlot + deviceData->numParticles + 1, firstFullSlot);
+
+    int numFullSlots = 0; 
+    deviceData->intBuffer2.getDeviceObject(numFullSlots, deviceData->numParticles);
+
+    deviceData->intBuffer3.resize(numFullSlots, false);
+
+    kernel_listFullSlots << <(deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK >> > (*deviceData, numFullSlots);
+
+    if (numFullSlots > 0)
     {
-        kernel_handleSink << <(deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK >> > (*deviceData);
-        cudaCheck(cudaGetLastError());
+        kernel_fillEmptySlots << <(deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK >> > (*deviceData, numFullSlots);
     }
 
+    deviceData->numParticles = numFullSlots;
+}
+
+
+void FluidDemo::addParticles() 
+{
     // add source particles
 
     sourceParticlePos.clear();
@@ -697,49 +747,20 @@ void FluidDemo::handleSourceAndSink()
         }
     }
 
-    if (sourceParticlePos.empty())
+    int numSourceParticles = Min((int)sourceParticlePos.size(), deviceData->maxParticles - deviceData->numParticles);
+
+    if (numSourceParticles == 0)
         return;
 
-    sourceParticleVel.resize(sourceParticlePos.size(), worldVel);
+    sourceParticleVel.resize(numSourceParticles, worldVel);
 
     deviceData->sourceParticlePos.set(sourceParticlePos);
     deviceData->sourceParticleVel.set(sourceParticleVel);
 
-    int numSlots = 0;
-
-    if (deviceData->numParticles > 0)
-    {
-        // fill into empty slots
-        // intBuffer needs to be at least numParticles + 1 for the exclusive scan
-        int intBufferSize = deviceData->numParticles + 1;
-        if (deviceData->intBuffer.size < intBufferSize) {
-            deviceData->intBuffer.resize(intBufferSize, false);
-        }
-        deviceData->intBuffer.setZero();
-
-        kernel_findSlots << <(deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK >> > (*deviceData);
-        cudaCheck(cudaGetLastError());
-
-        thrust::device_ptr<int> firstSlot(deviceData->intBuffer.buffer);
-        thrust::exclusive_scan(firstSlot, firstSlot + deviceData->numParticles + 1, firstSlot);
-
-        deviceData->intBuffer.getDeviceObject(numSlots, deviceData->numParticles);
-    }
-
-    // Calculate how many new particles we can add (limited by maxParticles)
-    int availableSlots = numSlots + (deviceData->maxParticles - deviceData->numParticles);
-    int numParticlesToAdd = Min((int)sourceParticlePos.size(), availableSlots);
-    
-    // Update numParticles if we're adding more than available slots
-    if (numParticlesToAdd > numSlots) {
-        deviceData->numParticles = Min(deviceData->numParticles + (numParticlesToAdd - numSlots), deviceData->maxParticles);
-    }
-
-    Vec3 color = Vec3(1.0f, 0.0f, 0.0f);
+    Vec3 color(1.0f, 1.0f, 1.0f);
     float lifetime = 1.0f;
 
-    // Launch kernel with enough threads to cover up to maxParticles
-    kernel_addSourceParticles<<<(deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*deviceData, numParticlesToAdd, numSlots, color, lifetime);
+    kernel_addSourceParticles<<<(numSourceParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(*deviceData, numSourceParticles, color, lifetime);
     cudaCheck(cudaGetLastError());
 }
 
@@ -753,7 +774,8 @@ void FluidDemo::updateCudaPhysics(float dt, cudaGraphicsResource* vboResource) {
     deviceData->vboData = d_vboData;
 
     // Handle source and sink (create new particles, remove particles in sink)
-    handleSourceAndSink();
+    removeParticles();
+    addParticles();
 
     if (deviceData->numParticles == 0) {
         cudaGraphicsUnmapResources(1, &vboResource, 0);
@@ -762,9 +784,8 @@ void FluidDemo::updateCudaPhysics(float dt, cudaGraphicsResource* vboResource) {
 
     int numBlocks = (deviceData->numParticles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
 
-    // Recompute spatial hash (pass lifetime as active filter)
-    const float* lifetimePtr = deviceData->vboData + VBO_LIFETIME;
-    hash->fillHash(deviceData->numParticles, deviceData->vboData, VBO_STRIDE, deviceData->gridSpacing, lifetimePtr);
+    // Recompute spatial hash
+    hash->fillHash(deviceData->numParticles, deviceData->vboData, VBO_STRIDE, deviceData->gridSpacing);
 
     int numSubSteps = 5;
     float sdt = dt / (float)numSubSteps;
